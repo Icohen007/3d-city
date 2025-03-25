@@ -3,22 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Three.js City Scene - Optimized</title>
+    <title>Enhanced 3D City Scene - Three.js</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; }
         canvas { display: block; }
-        #fps { position: absolute; top: 10px; left: 10px; color: yellow; font-family: sans-serif; } /* Basic FPS display */
+        /* Style for lil-gui */
+        :root { --lil-gui-background-color: #1f1f1f; --lil-gui-text-color: #ebebeb; --lil-gui-title-background-color: #111111; --lil-gui-widget-color: #424242; --lil-gui-hover-color: #4f4f4f; --lil-gui-focus-color: #5a5a5a; --lil-gui-number-color: #2cc5e4; --lil-gui-string-color: #b4d465; }
     </style>
 </head>
 <body>
-    <div id="fps">FPS: ...</div>
-    <canvas id="cityCanvas"></canvas>
-
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
@@ -26,1192 +24,1410 @@
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        // import { BufferGeometryUtils } from 'three/addons/utils/BufferGeometryUtils.js'; // Needed for merging (optional, not used in final version below for simplicity)
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 
         let scene, camera, renderer, controls, clock;
-        let sunLight, ambientLight;
-        let cars = [];
-        let pedestrians = [];
-        let streetLights = []; // Still needed for the PointLight objects
-        let trafficLights = [];
-        let billboards = [];
-        let timeOfDay = 0.25;
-        const dayDuration = 120;
+        let sunLight, ambientLight, hemisphereLight;
+        let ground;
+        let sunMesh, moonMesh; // Celestial bodies
+        const buildings = [];
+        const cars = [];
+        const pedestrians = [];
+        const lampposts = [];
+        const trafficLights = []; // Will store more info now
+        const billboards = [];
 
-        const citySize = 100;
-        const roadWidth = 8;
-        const sidewalkWidth = 3;
-        const buildingBlockSize = 20;
-        const streetWidth = roadWidth + sidewalkWidth * 2;
 
-        // --- Performance Monitoring ---
-        let frameCount = 0;
-        let lastFPSTime = 0;
-        const fpsElement = document.getElementById('fps');
+         // --- Constants ---
+        const CITY_SIZE = 100;
+        const ROAD_WIDTH = 8;
+        const SIDEWALK_WIDTH = 3;
+        const BLOCK_SIZE = 20;
+        const STREET_LIGHT_HEIGHT = 5;
+        const BUILDING_MAX_HEIGHT = 45; // Slightly increased max
+        const BUILDING_MIN_HEIGHT = 8; // Increased min
+        const CAR_LENGTH = 3.5;
+        const CAR_WIDTH = 1.8;
+        const CAR_HEIGHT = 1.5;
+        const PEDESTRIAN_HEIGHT = 1.7;
+        const PEDESTRIAN_RADIUS = 0.3;
+        const INTERSECTION_RADIUS = ROAD_WIDTH * 0.7; // Area around intersection center
 
-        // --- Optimization Settings ---
-        const SHADOW_MAP_SIZE = 1024; // Reduced shadow map size
-        const MAX_INSTANCED_ITEMS = 10000; // Max number of instances per InstancedMesh
-        const ENABLE_INSTANCING = true; // Toggle instancing easily
+        // --- Settings ---
+        const settings = {
+            // Performance
+            antialias: true,
+            shadows: true,
+            shadowMapSize: 2048, // Increased default for better quality
+            maxAnisotropy: 1,
 
-        // --- Shared Materials (Optimization) ---
+            // Scene Objects
+            numBuildings: 100, // Reduced default slightly for potentially heavier objects
+            numCars: 25,
+            numPedestrians: 40,
+            carSpeedMultiplier: 0.8, // Slightly reduced default
+            pedestrianSpeedMultiplier: 0.8,
+            addBillboards: true,
+
+            // Car AI
+            carSafetyDistance: CAR_LENGTH * 1.8, // Minimum distance cars keep from each other
+            trafficLightCompliance: true, // Whether cars obey traffic lights
+
+            // Lighting & Time
+            dayNightCycle: true,
+            timeOfDay: 0.3, // Start mid-morning
+            cycleSpeed: 0.01,
+            fogEnabled: true,
+            fogDensity: 0.007,
+
+            // Toggles
+            showCars: true,
+            showPedestrians: true,
+            showLamppostLights: true,
+
+            // Regeneration
+            regenerateCity: () => regenerateCity(),
+            resetCamera: () => resetCamera(),
+        };
+
+
+        // --- Materials (reusable) ---
         const materials = {
-            road: new THREE.MeshStandardMaterial({ color: 0x333333 }),
-            sidewalk: new THREE.MeshStandardMaterial({ color: 0x999999 }),
-            roadMarking: new THREE.MeshBasicMaterial({ color: 0xffffff }), // Basic for markings
-            lamppost: new THREE.MeshStandardMaterial({ color: 0x555555 }),
-            lampBulb: new THREE.MeshStandardMaterial({ color: 0xffffdd, emissive: 0x000000, emissiveIntensity: 0 }),
-            benchWood: new THREE.MeshStandardMaterial({ color: 0x8B4513 }),
-            benchMetal: new THREE.MeshStandardMaterial({ color: 0x666666 }),
+            road: new THREE.MeshStandardMaterial({ color: 0x444444, side: THREE.DoubleSide }),
+            sidewalk: new THREE.MeshStandardMaterial({ color: 0xbbbbbb, roughness: 0.8 }), // Less shiny sidewalk
+            grass: new THREE.MeshStandardMaterial({ color: 0x559955 }),
+            building: [ // More variety, slightly desaturated
+                new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.7, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x7777aa, roughness: 0.6, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0xaa7777, roughness: 0.8, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x77aa77, roughness: 0.7, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0xbbbb99, roughness: 0.8, metalness: 0.1 }),
+            ],
+            window: new THREE.MeshStandardMaterial({ color: 0x6699cc, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.7 }), // More reflective
+            shopWindow: new THREE.MeshStandardMaterial({ color: 0xffffee, roughness: 0.1, metalness: 0.1, emissive: 0x222211 }), // Slight glow
+            lamppost: new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.4, roughness: 0.5 }),
+            bench: new THREE.MeshStandardMaterial({ color: 0x8B4513 }),
             treeTrunk: new THREE.MeshStandardMaterial({ color: 0x8B4513 }),
             treeLeaves: new THREE.MeshStandardMaterial({ color: 0x228B22 }),
-            trashCan: new THREE.MeshStandardMaterial({ color: 0x606060 }),
-            hydrant: new THREE.MeshStandardMaterial({ color: 0xff0000 }),
-            busStopMetal: new THREE.MeshStandardMaterial({ color: 0x777777 }),
-            busStopGlass: new THREE.MeshStandardMaterial({ color: 0xeeeeff, transparent: true, opacity: 0.3, side: THREE.DoubleSide }),
-            busStopRoof: new THREE.MeshStandardMaterial({ color: 0x555555 }),
-            antenna: new THREE.MeshStandardMaterial({ color: 0xbbbbbb }),
-            billboardFrame: new THREE.MeshBasicMaterial({ color: 0x444444 }),
-            buildingColors: [ // Predefined building colors
-                new THREE.MeshStandardMaterial({ color: 0xcccccc }),
-                new THREE.MeshStandardMaterial({ color: 0xffccaa }),
-                new THREE.MeshStandardMaterial({ color: 0xaaddff }),
-                new THREE.MeshStandardMaterial({ color: 0xcfcfcf }),
-                new THREE.MeshStandardMaterial({ color: 0xffeebb }),
-                new THREE.MeshStandardMaterial({ color: 0xaaccaa }),
-            ]
+            carBody: [ // Slightly more muted/realistic tones
+                new THREE.MeshStandardMaterial({ color: 0xcc0000, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x0000cc, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0xcccc00, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.4, metalness: 0.1 }),
+                new THREE.MeshStandardMaterial({ color: 0x005522, roughness: 0.4, metalness: 0.1 }), // Dark Green
+            ],
+            carWheel: new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 }),
+            carWindow: new THREE.MeshStandardMaterial({ color: 0x333344, transparent: true, opacity: 0.6, roughness: 0.2 }), // Darker tint
+            trafficLightHousing: new THREE.MeshStandardMaterial({ color: 0x333333 }),
+            trafficLightRedOff: new THREE.MeshStandardMaterial({ color: 0x440000, roughness: 0.5 }),
+            trafficLightRedOn: new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0xff0000, emissiveIntensity: 1 }),
+            trafficLightYellowOff: new THREE.MeshStandardMaterial({ color: 0x444400, roughness: 0.5 }),
+            trafficLightYellowOn: new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xffff00, emissiveIntensity: 1 }),
+            trafficLightGreenOff: new THREE.MeshStandardMaterial({ color: 0x004400, roughness: 0.5 }),
+            trafficLightGreenOn: new THREE.MeshStandardMaterial({ color: 0x00ff00, emissive: 0x00ff00, emissiveIntensity: 1 }),
+            pedestrianBody: new THREE.MeshStandardMaterial({}), // Will be colored per pedestrian
+            pedestrianHead: new THREE.MeshStandardMaterial({ color: 0xffdbac }), // Skin tone
+            crossing: new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }), // Slightly transparent
+            lampLightOff: new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.3 }),
+            lampLightOn: new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffffaa, emissiveIntensity: 1.5 }), // Brighter glow
+            billboard: new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, map: null }), // Map will be set per billboard
+            sun: new THREE.MeshBasicMaterial({ color: 0xffff88 }),
+            moon: new THREE.MeshBasicMaterial({ color: 0xeeeeff }),
         };
 
-        // --- Instanced Mesh Data ---
-        const instanceData = {
-            lamppost: { positions: [], count: 0 },
-            treeTrunk: { positions: [], count: 0 },
-            treeLeaves: { positions: [], scales: [], count: 0 },
-            bench: { matrices: [], count: 0 },
-            trashCan: { positions: [], count: 0 },
-            hydrant: { positions: [], count: 0 },
-            roadDash: { matrices: [], count: 0 },
+        // --- Geometries (reusable) ---
+        const geometries = {
+            plane: new THREE.PlaneGeometry(1, 1),
+            box: new THREE.BoxGeometry(1, 1, 1),
+            cylinder: new THREE.CylinderGeometry(0.5, 0.5, 1, 16),
+            sphere: new THREE.SphereGeometry(0.5, 16, 8),
+            // Pedestrian parts
+            pedestrianTorso: new THREE.CapsuleGeometry(PEDESTRIAN_RADIUS * 0.9, PEDESTRIAN_HEIGHT * 0.6, 4, 8),
+            pedestrianHead: new THREE.SphereGeometry(PEDESTRIAN_RADIUS * 1.1, 16, 8),
+            cone: new THREE.ConeGeometry(0.5, 1, 16),
+            billboardPlane: new THREE.PlaneGeometry(1, 1), // Placeholder, scaled later
         };
-        let instancedMeshes = {};
-
 
         // --- Initialization ---
         function init() {
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87CEEB);
             clock = new THREE.Clock();
 
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(citySize * 0.6, citySize * 0.4, citySize * 0.6);
-            camera.lookAt(0, 0, 0);
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Start with sky blue
+            if (settings.fogEnabled) {
+                scene.fog = new THREE.FogExp2(scene.background, settings.fogDensity);
+            }
 
-            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('cityCanvas'), antialias: true });
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, CITY_SIZE * 3); // Adjusted FOV and far plane
+            resetCamera();
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: settings.antialias });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping; // Better color grading
+            renderer.toneMappingExposure = 1.0;
+            if (settings.shadows) {
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                renderer.shadowMap.width = settings.shadowMapSize;
+                renderer.shadowMap.height = settings.shadowMapSize;
+            }
+            settings.maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+            document.body.appendChild(renderer.domElement);
 
+            // Controls
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.dampingFactor = 0.05;
             controls.maxPolarAngle = Math.PI / 2 - 0.05;
-            controls.minDistance = 5;
-            controls.maxDistance = citySize * 1.5;
+            controls.minDistance = 3; // Allow closer zoom
+            controls.maxDistance = CITY_SIZE * 1.8; // Adjusted max distance
 
             // Lighting
-            ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            ambientLight = new THREE.AmbientLight(0xffffff, 0.1); // Lower ambient base
             scene.add(ambientLight);
 
-            sunLight = new THREE.DirectionalLight(0xffffff, 2);
-            sunLight.position.set(50, 80, 30);
-            sunLight.castShadow = true;
-            sunLight.shadow.mapSize.width = SHADOW_MAP_SIZE; // Use optimized size
-            sunLight.shadow.mapSize.height = SHADOW_MAP_SIZE;
-            sunLight.shadow.camera.near = 0.5;
-            sunLight.shadow.camera.far = 300;
-            // Optimize shadow frustum (can be tighter if city is always centered)
-            const shadowCamSize = citySize * 1.1;
+            hemisphereLight = new THREE.HemisphereLight(0xffffbb, 0x080820, 0.2); // Lower intensity base
+            scene.add(hemisphereLight);
+
+            sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            sunLight.position.set(CITY_SIZE * 0.5, CITY_SIZE, CITY_SIZE * 0.5);
+            sunLight.castShadow = settings.shadows;
+            const shadowCamSize = CITY_SIZE * 1.3; // Slightly larger shadow area
             sunLight.shadow.camera.left = -shadowCamSize;
             sunLight.shadow.camera.right = shadowCamSize;
             sunLight.shadow.camera.top = shadowCamSize;
             sunLight.shadow.camera.bottom = -shadowCamSize;
+            sunLight.shadow.camera.near = 1;
+            sunLight.shadow.camera.far = CITY_SIZE * 3;
+            sunLight.shadow.mapSize.width = settings.shadowMapSize;
+            sunLight.shadow.mapSize.height = settings.shadowMapSize;
+            sunLight.shadow.bias = -0.002; // Adjusted bias
             scene.add(sunLight);
             scene.add(sunLight.target);
 
-            // --- Create City Elements ---
-            createGround();
-            createCityLayout(); // This will now populate instanceData
-            setupInstancedMeshes(); // Create InstancedMesh objects from instanceData
-            spawnCars(25); // Reduced default
-            spawnPedestrians(40); // Reduced default
+            // Celestial Bodies
+            sunMesh = new THREE.Mesh(geometries.sphere, materials.sun);
+            sunMesh.scale.setScalar(CITY_SIZE * 0.05); // Size relative to city
+            scene.add(sunMesh);
 
-            window.addEventListener('resize', onWindowResize, false);
-            animate();
-        }
+            moonMesh = new THREE.Mesh(geometries.sphere, materials.moon);
+            moonMesh.scale.setScalar(CITY_SIZE * 0.04);
+            scene.add(moonMesh);
 
-        // --- Geometry & Mesh Creation (Modified for Instancing/Optimization) ---
-
-        function createGround() {
-            const groundSize = citySize * 3;
-            const groundGeometry = new THREE.PlaneGeometry(groundSize, groundSize);
-            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x505050, side: THREE.DoubleSide }); // Slightly lighter ground
-            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            // Ground Plane
+            ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(CITY_SIZE * 3, CITY_SIZE * 3), // Larger ground
+                materials.grass
+            );
             ground.rotation.x = -Math.PI / 2;
             ground.position.y = -0.05;
             ground.receiveShadow = true;
             scene.add(ground);
+
+            // Build the city
+            createCityLayout();
+            populateCity();
+
+            // GUI
+            setupGUI();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Start Animation Loop
+            animate();
         }
 
-        function createBuilding(width, height, depth, material) {
-            // Re-use geometry if dimensions are common? For now, create new.
-            const geometry = new THREE.BoxGeometry(width, height, depth);
-            geometry.translate(0, height / 2, 0); // Move origin to base
-            const building = new THREE.Mesh(geometry, material);
+        // --- City Generation ---
+        function createCityLayout() {
+            const halfCitySize = CITY_SIZE / 2;
+            const step = BLOCK_SIZE + ROAD_WIDTH;
+
+            // Roads
+            for (let i = -halfCitySize; i <= halfCitySize; i += step) {
+                const roadV = new THREE.Mesh(geometries.plane, materials.road);
+                roadV.scale.set(ROAD_WIDTH, CITY_SIZE + ROAD_WIDTH); // Extend to cover intersections fully
+                roadV.rotation.x = -Math.PI / 2;
+                roadV.position.set(i - ROAD_WIDTH / 2, 0, 0); // Center roads on grid lines
+                roadV.receiveShadow = true;
+                scene.add(roadV);
+
+                const roadH = new THREE.Mesh(geometries.plane, materials.road);
+                roadH.scale.set(CITY_SIZE + ROAD_WIDTH, ROAD_WIDTH);
+                roadH.rotation.x = -Math.PI / 2;
+                roadH.position.set(0, 0, i - ROAD_WIDTH / 2); // Center roads on grid lines
+                roadH.receiveShadow = true;
+                scene.add(roadH);
+            }
+
+            // Sidewalks, Grass Plots, Furniture, Intersections
+            for (let x = -halfCitySize; x < halfCitySize; x += step) {
+                for (let z = -halfCitySize; z < halfCitySize; z += step) {
+                    const blockCenterX = x + BLOCK_SIZE / 2;
+                    const blockCenterZ = z + BLOCK_SIZE / 2;
+                    const blockStartX = x;
+                    const blockStartZ = z;
+
+                    // Grass base for the block
+                    const grass = new THREE.Mesh(geometries.plane, materials.grass);
+                    grass.scale.set(BLOCK_SIZE, BLOCK_SIZE);
+                    grass.rotation.x = -Math.PI / 2;
+                    grass.position.set(blockCenterX, 0.01, blockCenterZ);
+                    grass.receiveShadow = true;
+                    scene.add(grass);
+
+                    // Sidewalks (using planes for better look)
+                    const sidewalkY = 0.05; // Slightly higher sidewalk
+                    const swMat = materials.sidewalk;
+
+                    // Top Sidewalk
+                    const swTop = new THREE.Mesh(geometries.plane, swMat);
+                    swTop.scale.set(BLOCK_SIZE, SIDEWALK_WIDTH);
+                    swTop.rotation.x = -Math.PI / 2;
+                    swTop.position.set(blockCenterX, sidewalkY, blockStartZ - SIDEWALK_WIDTH / 2);
+                    swTop.receiveShadow = true; scene.add(swTop);
+
+                    // Bottom Sidewalk
+                    const swBottom = new THREE.Mesh(geometries.plane, swMat);
+                    swBottom.scale.set(BLOCK_SIZE, SIDEWALK_WIDTH);
+                    swBottom.rotation.x = -Math.PI / 2;
+                    swBottom.position.set(blockCenterX, sidewalkY, blockStartZ + BLOCK_SIZE + SIDEWALK_WIDTH / 2);
+                    swBottom.receiveShadow = true; scene.add(swBottom);
+
+                    // Left Sidewalk
+                    const swLeft = new THREE.Mesh(geometries.plane, swMat);
+                    swLeft.scale.set(SIDEWALK_WIDTH, BLOCK_SIZE + 2 * SIDEWALK_WIDTH);
+                    swLeft.rotation.x = -Math.PI / 2;
+                    swLeft.position.set(blockStartX - SIDEWALK_WIDTH / 2, sidewalkY, blockCenterZ);
+                    swLeft.receiveShadow = true; scene.add(swLeft);
+
+                    // Right Sidewalk
+                    const swRight = new THREE.Mesh(geometries.plane, swMat);
+                    swRight.scale.set(SIDEWALK_WIDTH, BLOCK_SIZE + 2 * SIDEWALK_WIDTH);
+                    swRight.rotation.x = -Math.PI / 2;
+                    swRight.position.set(blockStartX + BLOCK_SIZE + SIDEWALK_WIDTH / 2, sidewalkY, blockCenterZ);
+                    swRight.receiveShadow = true; scene.add(swRight);
+
+                    // Add Street Furniture
+                    addStreetFurniture(blockStartX, blockStartZ, sidewalkY);
+
+                    // Add Intersection Features (Pass intersection center)
+                    const intersectX = blockStartX - ROAD_WIDTH / 2;
+                    const intersectZ = blockStartZ - ROAD_WIDTH / 2;
+                    addIntersectionFeatures(intersectX, intersectZ, sidewalkY);
+                }
+            }
+        }
+
+        function addStreetFurniture(blockStartX, blockStartZ, sidewalkY) {
+            const furnitureOffset = SIDEWALK_WIDTH * 0.3; // Place furniture slightly inwards
+
+            // Lampposts (corners and mid-points)
+            const positions = [
+                { x: blockStartX - furnitureOffset, z: blockStartZ - furnitureOffset },
+                { x: blockStartX + BLOCK_SIZE + furnitureOffset, z: blockStartZ - furnitureOffset },
+                { x: blockStartX - furnitureOffset, z: blockStartZ + BLOCK_SIZE + furnitureOffset },
+                { x: blockStartX + BLOCK_SIZE + furnitureOffset, z: blockStartZ + BLOCK_SIZE + furnitureOffset },
+                // Optional mid-points
+                 { x: blockStartX + BLOCK_SIZE / 2, z: blockStartZ - furnitureOffset },
+                 { x: blockStartX + BLOCK_SIZE / 2, z: blockStartZ + BLOCK_SIZE + furnitureOffset },
+                 { x: blockStartX - furnitureOffset, z: blockStartZ + BLOCK_SIZE / 2 },
+                 { x: blockStartX + BLOCK_SIZE + furnitureOffset, z: blockStartZ + BLOCK_SIZE / 2 },
+            ];
+
+            positions.forEach(pos => {
+                if (Math.random() < 0.6) { // Slightly fewer lampposts
+                     createLamppost(pos.x, sidewalkY, pos.z);
+                }
+            });
+
+            // Benches
+             if (Math.random() < 0.25) createBench(blockStartX + BLOCK_SIZE * Math.random(), sidewalkY, blockStartZ - furnitureOffset, Math.PI / 2);
+             if (Math.random() < 0.25) createBench(blockStartX + BLOCK_SIZE * Math.random(), sidewalkY, blockStartZ + BLOCK_SIZE + furnitureOffset, -Math.PI / 2);
+             if (Math.random() < 0.25) createBench(blockStartX - furnitureOffset, sidewalkY, blockStartZ + BLOCK_SIZE * Math.random(), 0);
+             if (Math.random() < 0.25) createBench(blockStartX + BLOCK_SIZE + furnitureOffset, sidewalkY, blockStartZ + BLOCK_SIZE * Math.random(), Math.PI);
+
+             // Trees
+            const treeOffset = SIDEWALK_WIDTH * 0.35;
+            if (Math.random() < 0.35) createTree(blockStartX + BLOCK_SIZE * Math.random(), sidewalkY, blockStartZ - treeOffset);
+            if (Math.random() < 0.35) createTree(blockStartX + BLOCK_SIZE * Math.random(), sidewalkY, blockStartZ + BLOCK_SIZE + treeOffset);
+            if (Math.random() < 0.35) createTree(blockStartX - treeOffset, sidewalkY, blockStartZ + BLOCK_SIZE * Math.random());
+            if (Math.random() < 0.35) createTree(blockStartX + BLOCK_SIZE + treeOffset, sidewalkY, blockStartZ + BLOCK_SIZE * Math.random());
+        }
+
+        function addIntersectionFeatures(intersectX, intersectZ, sidewalkY) {
+            const crossingWidth = SIDEWALK_WIDTH * 1.2;
+            const crossingLength = ROAD_WIDTH * 0.9; // Slightly shorter
+            const crossingY = 0.02; // Just above the road
+
+            // Pedestrian Crossings
+            const crossMat = materials.crossing;
+            const crossGeo = geometries.plane;
+
+            const crossH1 = new THREE.Mesh(crossGeo, crossMat);
+            crossH1.scale.set(crossingLength, crossingWidth);
+            crossH1.rotation.x = -Math.PI / 2;
+            crossH1.position.set(intersectX, crossingY, intersectZ - ROAD_WIDTH / 2 - crossingWidth / 2);
+            scene.add(crossH1);
+
+            const crossH2 = new THREE.Mesh(crossGeo, crossMat);
+            crossH2.scale.set(crossingLength, crossingWidth);
+            crossH2.rotation.x = -Math.PI / 2;
+            crossH2.position.set(intersectX, crossingY, intersectZ + ROAD_WIDTH / 2 + crossingWidth / 2);
+            scene.add(crossH2);
+
+            const crossV1 = new THREE.Mesh(crossGeo, crossMat);
+            crossV1.scale.set(crossingWidth, crossingLength);
+            crossV1.rotation.x = -Math.PI / 2;
+            crossV1.position.set(intersectX - ROAD_WIDTH / 2 - crossingWidth / 2, crossingY, intersectZ);
+            scene.add(crossV1);
+
+            const crossV2 = new THREE.Mesh(crossGeo, crossMat);
+            crossV2.scale.set(crossingWidth, crossingLength);
+            crossV2.rotation.x = -Math.PI / 2;
+            crossV2.position.set(intersectX + ROAD_WIDTH / 2 + crossingWidth / 2, crossingY, intersectZ);
+            scene.add(crossV2);
+
+            // Traffic Lights (Store intersection info)
+            const tlOffset = SIDEWALK_WIDTH * 0.5; // Position on sidewalk corner
+
+            // Create lights and store relevant info for car AI
+            // Directions: 0: +Z (North), 1: +X (East), 2: -Z (South), 3: -X (West)
+            createTrafficLight(intersectX - tlOffset, sidewalkY, intersectZ - tlOffset, Math.PI / 2, intersectX, intersectZ, [0, 1]); // Controls N/E bound traffic
+            createTrafficLight(intersectX + ROAD_WIDTH + tlOffset, sidewalkY, intersectZ + ROAD_WIDTH + tlOffset, -Math.PI / 2, intersectX, intersectZ, [2, 3]); // Controls S/W bound traffic
+
+            // Could add lights for the other directions if needed for visual realism,
+            // but these two control the two phases.
+        }
+
+        function populateCity() {
+            const halfCitySize = CITY_SIZE / 2;
+            const step = BLOCK_SIZE + ROAD_WIDTH;
+            let buildingsPlaced = 0;
+
+            // Buildings
+            for (let x = -halfCitySize; x < halfCitySize && buildingsPlaced < settings.numBuildings; x += step) {
+                for (let z = -halfCitySize; z < halfCitySize && buildingsPlaced < settings.numBuildings; z += step) {
+                    const blockInnerSize = BLOCK_SIZE - SIDEWALK_WIDTH * 0.5; // Allow buildings closer to edge
+                    const attempts = 3;
+                    for (let i = 0; i < attempts && buildingsPlaced < settings.numBuildings; i++) {
+                        const buildingWidth = Math.random() * (blockInnerSize / 1.5) + (blockInnerSize / 4);
+                        const buildingDepth = Math.random() * (blockInnerSize / 1.5) + (blockInnerSize / 4);
+                        const buildingHeight = Math.random() * (BUILDING_MAX_HEIGHT - BUILDING_MIN_HEIGHT) + BUILDING_MIN_HEIGHT;
+
+                        const buildingX = x + SIDEWALK_WIDTH * 0.25 + Math.random() * (blockInnerSize - buildingWidth) + buildingWidth / 2;
+                        const buildingZ = z + SIDEWALK_WIDTH * 0.25 + Math.random() * (blockInnerSize - buildingDepth) + buildingDepth / 2;
+
+                        let tooClose = false;
+                        for(const b of buildings) {
+                            const dist = Math.sqrt(Math.pow(b.position.x - buildingX, 2) + Math.pow(b.position.z - buildingZ, 2));
+                            if (dist < (buildingWidth + buildingDepth) / 3.5) { // Slightly stricter overlap check
+                                tooClose = true;
+                                break;
+                            }
+                        }
+
+                        if (!tooClose) {
+                            createBuilding(buildingX, buildingZ, buildingWidth, buildingHeight, buildingDepth);
+                            buildingsPlaced++;
+                        }
+                    }
+                }
+            }
+            console.log(`Placed ${buildingsPlaced} buildings.`);
+
+            // Cars
+            for (let i = 0; i < settings.numCars; i++) {
+                createCar();
+            }
+
+            // Pedestrians
+            for (let i = 0; i < settings.numPedestrians; i++) {
+                createPedestrian();
+            }
+        }
+
+        function clearCity() {
+            // Remove dynamic objects and their associated data
+            [buildings, cars, pedestrians, lampposts, trafficLights, billboards].forEach(arr => {
+                arr.forEach(item => {
+                    if (item.mesh) scene.remove(item.mesh);
+                    else scene.remove(item); // For simple meshes like buildings
+
+                    // Special cleanup for objects with lights or textures
+                    if (item.light) scene.remove(item.light);
+                    if (item.bulb) scene.remove(item.bulb);
+                    if (item.lights) { // Traffic lights parts
+                        scene.remove(item.lights.red);
+                        scene.remove(item.lights.yellow);
+                        scene.remove(item.lights.green);
+                    }
+                    if(item.texture) item.texture.dispose(); // Dispose billboard textures
+                    if(item.material) item.material.dispose(); // Dispose billboard materials
+                });
+                arr.length = 0;
+            });
+
+            // Remove static layout elements (less efficient but needed for full regen)
+            const objectsToRemove = [];
+            scene.traverse((object) => {
+                if (object !== ground && object !== camera && object !== sunLight && object !== ambientLight && object !== hemisphereLight && object !== sunMesh && object !== moonMesh && !(object instanceof THREE.DirectionalLightHelper) && !(object instanceof THREE.CameraHelper) && object !== sunLight.target) {
+                     if (object.isMesh && object.geometry !== geometries.sphere) { // Avoid removing sun/moon
+                        // Check if it's part of the base layout
+                         if (object.material === materials.road ||
+                             object.material === materials.sidewalk ||
+                             object.material === materials.grass ||
+                             object.material === materials.crossing ||
+                             object.material === materials.lamppost || // Lamppost parts
+                             object.material === materials.bench || // Bench parts
+                             object.material === materials.treeTrunk || // Tree parts
+                             object.material === materials.treeLeaves ||
+                             object.material === materials.trafficLightHousing)
+                         {
+                            objectsToRemove.push(object);
+                        }
+                     } else if (object.isGroup) { // Remove groups like benches, trees, lampposts
+                         // Check if group contains materials indicative of static elements
+                         let isStaticGroup = false;
+                         object.traverse((child) => {
+                             if(child.isMesh && (child.material === materials.lamppost || child.material === materials.bench || child.material === materials.treeTrunk)) {
+                                 isStaticGroup = true;
+                             }
+                         });
+                         if(isStaticGroup) {
+                             objectsToRemove.push(object);
+                         }
+                     }
+                }
+            });
+            objectsToRemove.forEach(obj => {
+                // Dispose geometry/material if they are unique to this object
+                // (Not strictly necessary if using shared ones, but safer)
+                if (obj.geometry) obj.geometry.dispose();
+                if (obj.material) {
+                    if (Array.isArray(obj.material)) {
+                        obj.material.forEach(m => m.dispose());
+                    } else {
+                        obj.material.dispose();
+                    }
+                }
+                scene.remove(obj);
+            });
+        }
+
+
+        function regenerateCity() {
+            clearCity();
+            createCityLayout();
+            populateCity();
+            updateShadowSettings();
+            updateObjectVisibility();
+            updateFog(); // Reapply fog settings
+        }
+
+        // --- Object Creation Functions ---
+
+        function createBuilding(x, z, width, height, depth) {
+            const buildingGroup = new THREE.Group(); // Use group for easier billboard attachment
+
+            const buildingMat = materials.building[Math.floor(Math.random() * materials.building.length)].clone(); // Clone to allow potential modification
+            const building = new THREE.Mesh(geometries.box, buildingMat);
+            building.scale.set(width, height, depth);
             building.castShadow = true;
             building.receiveShadow = true;
-            // Position set externally
-            return building;
-        }
+            buildingGroup.add(building);
 
-        function createRoadSegment(x, z, length, vertical = false) {
-            // Use shared road material
-            const roadGeometry = new THREE.PlaneGeometry(vertical ? roadWidth : length, vertical ? length : roadWidth);
-            const road = new THREE.Mesh(roadGeometry, materials.road);
-            road.rotation.x = -Math.PI / 2;
-            road.position.set(x, 0, z);
-            road.receiveShadow = true;
-            scene.add(road);
+            // Simple roof detail
+            const roofHeight = Math.random() * 0.5 + 0.1;
+            const roof = new THREE.Mesh(geometries.box, materials.lamppost); // Use a darker material
+            roof.scale.set(width * 0.95, roofHeight, depth * 0.95);
+            roof.position.y = height / 2 + roofHeight / 2;
+            roof.castShadow = true;
+            roof.receiveShadow = true;
+            buildingGroup.add(roof);
 
-            // Center line dashes (Add data for instancing)
-            if (ENABLE_INSTANCING) {
-                const dashLength = 1;
-                const gapLength = 0.5;
-                const numDashes = Math.floor(length / (dashLength + gapLength));
-                const tempObject = new THREE.Object3D(); // Helper for matrix calculation
+            buildingGroup.position.set(x, height / 2, z); // Position the group
+            scene.add(buildingGroup);
+            buildings.push(buildingGroup); // Store the group
 
-                for (let i = 0; i < numDashes; i++) {
-                    if (instanceData.roadDash.count >= MAX_INSTANCED_ITEMS) break;
-                    const offset = -length / 2 + dashLength / 2 + i * (dashLength + gapLength);
-                    tempObject.position.set(vertical ? x : x + offset, 0.01, vertical ? z + offset : z);
-                    tempObject.rotation.x = -Math.PI/2;
-                    // No rotation needed for dashes if geometry is defined correctly
-                     tempObject.scale.set(vertical ? 0.1 : dashLength, vertical ? dashLength : 0.1, 1); // Scale plane instead
-                    tempObject.updateMatrix();
-                    instanceData.roadDash.matrices.push(tempObject.matrix.clone());
-                    instanceData.roadDash.count++;
-                }
-            } else { // Original non-instanced way
-                const dashLength = 1;
-                const gapLength = 0.5;
-                const numDashes = Math.floor(length / (dashLength + gapLength));
-
-                for (let i = 0; i < numDashes; i++) {
-                    const dashGeo = new THREE.PlaneGeometry(vertical ? 0.1 : dashLength, vertical ? dashLength : 0.1);
-                    const dash = new THREE.Mesh(dashGeo, materials.roadMarking);
-                    dash.rotation.x = -Math.PI / 2;
-                    const offset = -length / 2 + dashLength / 2 + i * (dashLength + gapLength);
-                    dash.position.set(vertical ? x : x + offset, 0.01, vertical ? z + offset : z);
-                    dash.receiveShadow = false;
-                    scene.add(dash);
-                }
+            // Add Billboard (Randomly)
+            if (settings.addBillboards && height > 15 && Math.random() < 0.3) { // Only on taller buildings
+                createBillboardOnBuilding(buildingGroup, width, height, depth);
             }
         }
 
-        function createSidewalkSegment(x, z, length, width, verticalEdge = false) {
-             const sidewalkGeo = new THREE.BoxGeometry(verticalEdge ? width : length, 0.1, verticalEdge ? length : width );
-             const sidewalk = new THREE.Mesh(sidewalkGeo, materials.sidewalk); // Use shared material
-             sidewalk.position.set(x, 0.05, z);
-             sidewalk.receiveShadow = true;
-             sidewalk.castShadow = false; // Sidewalks themselves don't need to cast shadows
-             scene.add(sidewalk);
-        }
+        function createBillboardOnBuilding(buildingGroup, width, height, depth) {
+            const billboardText = "Itamar";
+            const aspectRatio = 2.5; // Width to height ratio
+            const billboardScale = Math.min(width, depth) * 0.8; // Size relative to building face
+            const billboardWidth = billboardScale;
+            const billboardHeight = billboardScale / aspectRatio;
+            const billboardYOffset = height / 2 - billboardHeight / 2 - 0.5; // Place near top edge
 
-        function createCrossing(x, z, length, vertical = false) {
-            // Could potentially be instanced too, but let's keep simple for now
-            const stripeWidth = 0.5;
-            const stripeLength = roadWidth;
-            const gap = 0.5;
-            const numStripes = Math.floor(length / (stripeWidth + gap));
+            const { mesh: billboardMesh, texture, material } = createBillboard(billboardText, billboardWidth, billboardHeight);
 
-            for (let i = 0; i < numStripes; i++) {
-                const stripeGeo = new THREE.PlaneGeometry(vertical ? stripeLength : stripeWidth, vertical ? stripeWidth : stripeLength);
-                const stripe = new THREE.Mesh(stripeGeo, materials.roadMarking); // Use shared material
-                stripe.rotation.x = -Math.PI / 2;
-                const offset = -length / 2 + stripeWidth / 2 + i * (stripeWidth + gap);
-                stripe.position.set(vertical ? x + offset : x, 0.015, vertical ? z : z + offset);
-                stripe.receiveShadow = false;
-                scene.add(stripe);
-            }
-        }
+            // Choose a side (slightly random)
+            const side = Math.floor(Math.random() * 4);
+            const offset = 0.1; // Offset from building face
 
-        function addLamppostInstance(x, z) {
-            const postHeight = 5;
-            const lightIntensity = 25;
-            const lightDistance = 18;
-
-            // Add position data for InstancedMesh
-            if (instanceData.lamppost.count < MAX_INSTANCED_ITEMS) {
-                instanceData.lamppost.positions.push(x, postHeight / 2, z); // Store base position
-                instanceData.lamppost.count++;
+            if (side === 0) { // +X face
+                billboardMesh.position.set(width / 2 + offset, billboardYOffset, 0);
+                billboardMesh.rotation.y = Math.PI / 2;
+            } else if (side === 1) { // -X face
+                billboardMesh.position.set(-width / 2 - offset, billboardYOffset, 0);
+                billboardMesh.rotation.y = -Math.PI / 2;
+            } else if (side === 2) { // +Z face
+                billboardMesh.position.set(0, billboardYOffset, depth / 2 + offset);
+                billboardMesh.rotation.y = 0;
+            } else { // -Z face
+                billboardMesh.position.set(0, billboardYOffset, -depth / 2 - offset);
+                billboardMesh.rotation.y = Math.PI;
             }
 
-            // Create the actual PointLight (cannot be instanced easily)
-            const pointLight = new THREE.PointLight(0xffaa44, 0, lightDistance);
-            pointLight.position.set(x, postHeight, z); // Light position near top
-            pointLight.castShadow = false; // Ensure shadows are off for performance
-            scene.add(pointLight);
-
-            // Store light and reference to shared bulb material for day/night cycle
-            // We can't easily link an instance to a specific light's material state,
-            // so the bulb mesh won't glow individually with instancing.
-            // We keep the light logic for illumination.
-            streetLights.push({ light: pointLight, intensity: lightIntensity });
+            buildingGroup.add(billboardMesh); // Add billboard to the building group
+            billboards.push({ mesh: billboardMesh, texture: texture, material: material }); // Keep track for cleanup
         }
 
-        function addBenchInstance(x, z, rotationY = 0) {
-            if (instanceData.bench.count >= MAX_INSTANCED_ITEMS) return;
-
-            const tempObject = new THREE.Object3D();
-            tempObject.position.set(x, 0, z);
-            tempObject.rotation.y = rotationY;
-            tempObject.updateMatrix();
-
-            instanceData.bench.matrices.push(tempObject.matrix.clone());
-            instanceData.bench.count++;
-        }
-
-        function addTreeInstance(x, z) {
-             const trunkHeight = 2 + Math.random() * 1;
-             const trunkRadius = 0.1 + Math.random() * 0.1;
-             const leavesHeight = 2 + Math.random() * 2;
-             const leavesRadius = 0.8 + Math.random() * 0.4;
-
-             // Trunk Instance Data
-             if (instanceData.treeTrunk.count < MAX_INSTANCED_ITEMS) {
-                 // Assume trunk geometry origin is at base for position setting
-                 instanceData.treeTrunk.positions.push(x, 0, z); // Position at base
-                 instanceData.treeTrunk.count++;
-                 // Note: If trunk geometry has varying height/radius, need attributes or separate InstancedMeshes
-             }
-
-             // Leaves Instance Data
-             if (instanceData.treeLeaves.count < MAX_INSTANCED_ITEMS) {
-                 // Assume leaves geometry origin allows scaling and positioning
-                 instanceData.treeLeaves.positions.push(x, trunkHeight + leavesHeight / 2 - 0.2, z); // Center of leaves mass
-                 instanceData.treeLeaves.scales.push(leavesRadius, leavesHeight, leavesRadius); // Scale base cone geometry
-                 instanceData.treeLeaves.count++;
-             }
-        }
-
-        function addTrashCanInstance(x, z) {
-            if (instanceData.trashCan.count < MAX_INSTANCED_ITEMS) {
-                 // Assuming geometry origin is at base
-                instanceData.trashCan.positions.push(x, 0, z);
-                instanceData.trashCan.count++;
-            }
-        }
-
-        function addFireHydrantInstance(x, z) {
-             if (instanceData.hydrant.count < MAX_INSTANCED_ITEMS) {
-                 // Assuming geometry origin is at base
-                 instanceData.hydrant.positions.push(x, 0, z);
-                 instanceData.hydrant.count++;
-             }
-        }
-
-        // Non-Instanced Objects (Keep as is for now)
-         function createTrafficLight(x, z, rotationY = 0) {
-            // ... (Keep traffic light creation as individual objects, they have state)
-            // ... Ensure castShadow=false for performance on small parts
-            const lightGroup = new THREE.Group();
-            const poleHeight = 4;
-            const boxWidth = 0.4;
-            const boxHeight = 1.0;
-            const boxDepth = 0.3;
-            const lightRadius = 0.12;
-
-            const poleGeo = new THREE.CylinderGeometry(0.05, 0.05, poleHeight, 8);
-            const pole = new THREE.Mesh(poleGeo, materials.lamppost); // Reuse material
-            pole.position.y = poleHeight / 2;
-            pole.castShadow = false;
-            lightGroup.add(pole);
-
-            const boxGeo = new THREE.BoxGeometry(boxWidth, boxHeight, boxDepth);
-            const boxMat = new THREE.MeshStandardMaterial({ color: 0x333333 }); // Specific material okay here
-            const box = new THREE.Mesh(boxGeo, boxMat);
-            box.position.y = poleHeight - boxHeight / 2;
-            box.castShadow = false;
-            lightGroup.add(box);
-
-            const redLightGeo = new THREE.SphereGeometry(lightRadius, 16, 8);
-            const yellowLightGeo = new THREE.SphereGeometry(lightRadius, 16, 8);
-            const greenLightGeo = new THREE.SphereGeometry(lightRadius, 16, 8);
-
-            // State is managed via material color, so unique materials needed per light
-            const redMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-            const yellowMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-            const greenMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-
-            const redLight = new THREE.Mesh(redLightGeo, redMat);
-            const yellowLight = new THREE.Mesh(yellowLightGeo, yellowMat);
-            const greenLight = new THREE.Mesh(greenLightGeo, greenMat);
-
-            const lightYOffset = poleHeight - boxHeight / 2;
-            const lightZOffset = boxDepth / 2 + 0.01;
-
-            redLight.position.set(0, lightYOffset + boxHeight / 3, lightZOffset);
-            yellowLight.position.set(0, lightYOffset, lightZOffset);
-            greenLight.position.set(0, lightYOffset - boxHeight / 3, lightZOffset);
-            redLight.castShadow = false;
-            yellowLight.castShadow = false;
-            greenLight.castShadow = false;
-
-            lightGroup.add(redLight);
-            lightGroup.add(yellowLight);
-            lightGroup.add(greenLight);
-
-            lightGroup.position.set(x, 0, z);
-            lightGroup.rotation.y = rotationY;
-
-            scene.add(lightGroup);
-
-            const trafficLight = {
-                 group: lightGroup,
-                 lights: { red: redLight, yellow: yellowLight, green: greenLight },
-                 materials: { red: redMat, yellow: yellowMat, green: greenMat },
-                 state: 'red',
-                 timer: Math.random() * 15
-             };
-            trafficLights.push(trafficLight);
-            setTrafficLightState(trafficLight, 'red');
-            return trafficLight;
-         }
-
-         function createBusStop(x, z, rotationY = 0) {
-            // Keep as individual group, relatively few bus stops
-            // Ensure castShadow=false on parts
-             const stopGroup = new THREE.Group();
-             const shelterWidth = 3;
-             const shelterDepth = 1.5;
-             const shelterHeight = 2.2;
-             const postRadius = 0.05;
-
-             const postGeo = new THREE.CylinderGeometry(postRadius, postRadius, shelterHeight, 8);
-             const post1 = new THREE.Mesh(postGeo, materials.busStopMetal);
-             const post2 = new THREE.Mesh(postGeo, materials.busStopMetal);
-             post1.position.set(-shelterWidth / 2 + postRadius, shelterHeight / 2, -shelterDepth / 2 + postRadius);
-             post2.position.set(shelterWidth / 2 - postRadius, shelterHeight / 2, -shelterDepth / 2 + postRadius);
-             post1.castShadow = false;
-             post2.castShadow = false;
-             stopGroup.add(post1);
-             stopGroup.add(post2);
-
-             const backGeo = new THREE.PlaneGeometry(shelterWidth, shelterHeight);
-             const backPanel = new THREE.Mesh(backGeo, materials.busStopGlass);
-             backPanel.position.set(0, shelterHeight / 2, -shelterDepth / 2);
-             backPanel.castShadow = false;
-             backPanel.receiveShadow = false;
-             stopGroup.add(backPanel);
-
-             const roofGeo = new THREE.BoxGeometry(shelterWidth * 1.1, 0.1, shelterDepth * 1.1);
-             const roof = new THREE.Mesh(roofGeo, materials.busStopRoof);
-             roof.position.set(0, shelterHeight + 0.05, -shelterDepth/2 + 0.05);
-             roof.castShadow = false; // Roof casting shadow might be okay, but disable for max perf
-             stopGroup.add(roof);
-
-             const benchWidth = shelterWidth * 0.8;
-             const benchDepth = 0.4;
-             const benchHeight = 0.45;
-             const benchGeo = new THREE.BoxGeometry(benchWidth, 0.1, benchDepth);
-             const bench = new THREE.Mesh(benchGeo, materials.sidewalk); // Reuse sidewalk grey
-             bench.position.set(0, benchHeight, -shelterDepth / 2 + benchDepth / 2 + 0.1);
-             bench.castShadow = false;
-             stopGroup.add(bench);
-
-             stopGroup.position.set(x, 0, z);
-             stopGroup.rotation.y = rotationY;
-             scene.add(stopGroup);
-         }
-
-         function createAntenna(x, y, z) {
-            // Keep as individual, few antennas, disable shadows
-             const antennaGroup = new THREE.Group();
-             const poleHeight = 3 + Math.random() * 4;
-             const poleRadius = 0.05;
-
-             const poleGeo = new THREE.CylinderGeometry(poleRadius, poleRadius * 0.8, poleHeight, 6);
-             const pole = new THREE.Mesh(poleGeo, materials.antenna);
-             pole.position.y = poleHeight / 2;
-             pole.castShadow = false;
-             antennaGroup.add(pole);
-
-             const barLength = 0.5 + Math.random() * 0.5;
-             const barGeo = new THREE.CylinderGeometry(poleRadius * 0.5, poleRadius * 0.5, barLength, 4);
-             const bar1 = new THREE.Mesh(barGeo, materials.antenna);
-             bar1.rotation.x = Math.PI/2;
-             bar1.position.y = poleHeight * (0.6 + Math.random() * 0.3);
-             bar1.castShadow = false;
-             antennaGroup.add(bar1);
-
-             const bar2 = new THREE.Mesh(barGeo, materials.antenna);
-             bar2.rotation.z = Math.PI/2;
-             bar2.position.y = poleHeight * (0.4 + Math.random() * 0.2);
-             bar2.castShadow = false;
-             antennaGroup.add(bar2);
-
-             antennaGroup.position.set(x, y, z);
-             scene.add(antennaGroup);
-         }
-
-        function createBillboard(width, height, text, textColor = '#FFFFFF', bgColor = '#2222AA') {
-            const billboardGroup = new THREE.Group();
-
-            // Canvas for Text
+        function createBillboard(text, width, height) {
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
-            const resolutionFactor = 2;
-            canvas.width = width * 100 * resolutionFactor;
+            const resolutionFactor = 2; // Increase resolution for sharper text
+            canvas.width = width * 100 * resolutionFactor; // Use larger canvas for better quality
             canvas.height = height * 100 * resolutionFactor;
 
             // Background
-            context.fillStyle = bgColor;
+            context.fillStyle = '#222'; // Dark background
             context.fillRect(0, 0, canvas.width, canvas.height);
 
-            // --- FIX: Mirror text by scaling context ---
-            context.save(); // Save default context state
-            context.scale(-1, 1); // Flip horizontally
-
-            // Text Styling
-            context.fillStyle = textColor;
-            context.font = `bold ${canvas.height * 0.45}px Arial`; // Slightly smaller font
+            // Text
+            context.fillStyle = '#FFF';
+            const fontSize = canvas.height * 0.6; // Adjust font size relative to canvas height
+            context.font = `bold ${fontSize}px Arial`;
             context.textAlign = 'center';
             context.textBaseline = 'middle';
-
-            // Draw Text (use negative x due to scale)
-            context.fillText(text, -canvas.width / 2, canvas.height / 2);
-
-            context.restore(); // Restore context state
-            // --- End Fix ---
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
 
             const texture = new THREE.CanvasTexture(canvas);
             texture.needsUpdate = true;
 
-            // Billboard Display Plane
-            const planeGeo = new THREE.PlaneGeometry(width, height);
-            // Use MeshBasicMaterial - always visible, no lighting needed, cheaper
-            const planeMat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
-            const billboardPlane = new THREE.Mesh(planeGeo, planeMat);
-            billboardPlane.receiveShadow = false; // Don't receive shadows
-            billboardPlane.castShadow = false;
-            billboardGroup.add(billboardPlane);
+            const material = materials.billboard.clone(); // Clone base material
+            material.map = texture;
+            material.needsUpdate = true;
 
-            // Frame (Optional, keep simple)
-            const frameThickness = 0.1;
-            const frameDepth = 0.1;
-            // Frame doesn't need to be fancy, use basic material
-            const frameMat = materials.billboardFrame;
+            const mesh = new THREE.Mesh(geometries.billboardPlane, material);
+            mesh.scale.set(width, height, 1);
+            mesh.castShadow = false; // Billboards usually don't cast significant shadows
+            mesh.receiveShadow = true; // Can receive shadows
 
-            const frameTopGeo = new THREE.BoxGeometry(width + frameThickness*2, frameThickness, frameDepth);
-            const frameTop = new THREE.Mesh(frameTopGeo, frameMat);
-            frameTop.position.set(0, height / 2 + frameThickness / 2, -frameDepth/2);
-            frameTop.castShadow = false;
-            billboardGroup.add(frameTop);
-            // Add other frame parts similarly... (omitted bottom/left/right for brevity, add back if needed)
-             const frameBottom = new THREE.Mesh(frameTopGeo, frameMat); // Reuse geometry
-             frameBottom.position.set(0, -height / 2 - frameThickness / 2, -frameDepth/2);
-             frameBottom.castShadow = false;
-             billboardGroup.add(frameBottom);
-
-             const frameSideGeo = new THREE.BoxGeometry(frameThickness, height, frameDepth); // Sides geo
-             const frameLeft = new THREE.Mesh(frameSideGeo, frameMat);
-             frameLeft.position.set(-width / 2 - frameThickness / 2, 0, -frameDepth/2);
-             frameLeft.castShadow = false;
-             billboardGroup.add(frameLeft);
-
-             const frameRight = new THREE.Mesh(frameSideGeo, frameMat);
-             frameRight.position.set(width / 2 + frameThickness / 2, 0, -frameDepth/2);
-             frameRight.castShadow = false;
-             billboardGroup.add(frameRight);
-
-
-            billboards.push(billboardGroup);
-            return billboardGroup;
+            return { mesh, texture, material };
         }
 
 
-        // --- City Layout Generation ---
-        function createCityLayout() {
-            const numBlocks = Math.floor(citySize / (buildingBlockSize + streetWidth));
-            const cityExtent = numBlocks * (buildingBlockSize + streetWidth);
+        function createLamppost(x, y, z) {
+            const poleHeight = STREET_LIGHT_HEIGHT;
+            const poleRadius = 0.08; // Thinner pole
+            const lightFixtureSize = 0.4;
+            const armLength = 0.5;
 
-             // Roads and Sidewalks Grid
-             // ... (createRoadSegment and createSidewalkSegment called here) ...
-             for (let i = -numBlocks; i <= numBlocks; i++) {
-                 const pos = i * (buildingBlockSize + streetWidth);
-                 if(Math.abs(pos) <= citySize + streetWidth) {
-                    createRoadSegment(pos, 0, citySize * 2.2, true);
-                    createSidewalkSegment(pos + roadWidth/2 + sidewalkWidth/2, 0, citySize * 2.2, sidewalkWidth, true);
-                    createSidewalkSegment(pos - roadWidth/2 - sidewalkWidth/2, 0, citySize * 2.2, sidewalkWidth, true);
-                 }
-                  if(Math.abs(pos) <= citySize + streetWidth) {
-                     createRoadSegment(0, pos, citySize * 2.2, false);
-                     createSidewalkSegment(0, pos + roadWidth/2 + sidewalkWidth/2, citySize * 2.2, sidewalkWidth, false);
-                     createSidewalkSegment(0, pos - roadWidth/2 - sidewalkWidth/2, citySize * 2.2, sidewalkWidth, false);
-                  }
-             }
+            const lamppostGroup = new THREE.Group();
 
-             // Intersections
-             // ... (createCrossing and createTrafficLight called here) ...
-             for (let i = -numBlocks; i <= numBlocks; i++) {
-                 for (let j = -numBlocks; j <= numBlocks; j++) {
-                     const crossX = i * (buildingBlockSize + streetWidth);
-                     const crossZ = j * (buildingBlockSize + streetWidth);
-                     createCrossing(crossX, crossZ + roadWidth/2 + 0.1, sidewalkWidth * 2, true);
-                     createCrossing(crossX, crossZ - roadWidth/2 - 0.1, sidewalkWidth * 2, true);
-                     createCrossing(crossX + roadWidth/2 + 0.1, crossZ, sidewalkWidth * 2, false);
-                     createCrossing(crossX - roadWidth/2 - 0.1, crossZ, sidewalkWidth * 2, false);
-                     const lightOffset = roadWidth / 2 + sidewalkWidth / 2;
-                     createTrafficLight(crossX - lightOffset, crossZ - lightOffset, Math.PI / 4);
-                     createTrafficLight(crossX + lightOffset, crossZ - lightOffset, -Math.PI / 4);
-                     createTrafficLight(crossX - lightOffset, crossZ + lightOffset, Math.PI * 3 / 4);
-                     createTrafficLight(crossX + lightOffset, crossZ + lightOffset, -Math.PI * 3 / 4);
-                 }
-             }
+            // Pole
+            const pole = new THREE.Mesh(geometries.cylinder, materials.lamppost);
+            pole.scale.set(poleRadius * 2, poleHeight, poleRadius * 2);
+            pole.position.y = poleHeight / 2;
+            pole.castShadow = true;
+            lamppostGroup.add(pole);
 
+            // Arm
+            const arm = new THREE.Mesh(geometries.box, materials.lamppost);
+            arm.scale.set(poleRadius * 1.5, poleRadius * 1.5, armLength);
+            arm.position.set(0, poleHeight - poleRadius * 2, armLength / 2); // Position arm end at pole top
+            arm.castShadow = true;
+            lamppostGroup.add(arm);
 
-            // Buildings and Street Furniture
-            for (let i = -numBlocks; i < numBlocks; i++) {
-                for (let j = -numBlocks; j < numBlocks; j++) {
-                    const blockCenterX = (i + 0.5) * (buildingBlockSize + streetWidth);
-                    const blockCenterZ = (j + 0.5) * (buildingBlockSize + streetWidth);
+            // Light Fixture (simple box)
+            const fixture = new THREE.Mesh(geometries.box, materials.lamppost);
+            fixture.scale.set(lightFixtureSize * 0.5, lightFixtureSize * 0.3, lightFixtureSize * 0.5);
+            fixture.position.set(0, poleHeight - lightFixtureSize * 0.3, armLength); // At end of arm
+            fixture.castShadow = true;
+            lamppostGroup.add(fixture);
 
-                    // Building
-                    const buildingHeight = 5 + Math.random() * (buildingBlockSize * 3); // More varied heights
-                    const buildingWidth = buildingBlockSize * (0.7 + Math.random() * 0.2);
-                    const buildingDepth = buildingBlockSize * (0.7 + Math.random() * 0.2);
-                    const buildingMat = materials.buildingColors[Math.floor(Math.random() * materials.buildingColors.length)];
-                    const building = createBuilding(buildingWidth, buildingHeight, buildingDepth, buildingMat);
-                    building.position.set(blockCenterX, 0, blockCenterZ);
-                    scene.add(building);
+            // Bulb Mesh
+            const bulb = new THREE.Mesh(geometries.sphere, materials.lampLightOff);
+            bulb.scale.setScalar(lightFixtureSize * 0.15);
+            bulb.position.set(0, poleHeight - lightFixtureSize * 0.45, armLength); // Under fixture
+            lamppostGroup.add(bulb);
 
-                    // Antenna (Less frequent)
-                    if (Math.random() < 0.15) {
-                         createAntenna(blockCenterX + (Math.random()-0.5)*buildingWidth*0.5,
-                                       buildingHeight,
-                                       blockCenterZ + (Math.random()-0.5)*buildingDepth*0.5);
-                    }
+            // Point Light
+            const pointLight = new THREE.PointLight(0xffffdd, 0, 18, 1.8); // Increased range/decay
+            pointLight.position.set(0, poleHeight - lightFixtureSize * 0.5, armLength);
+            pointLight.castShadow = false;
+            lamppostGroup.add(pointLight);
 
-                    // Billboard on MOST buildings (80% chance)
-                    if (Math.random() < 0.8) {
-                         // Adjust size based on building dimensions
-                         let billboardWidth = Math.min(buildingWidth * 0.7, 15); // Cap max width
-                         let billboardHeight = Math.min(buildingHeight * 0.4, billboardWidth * 0.5); // Limit height by building height and aspect ratio
-                         billboardWidth = billboardHeight / 0.5; // Recalculate width based on limited height to maintain aspect ratio
-
-                         if (billboardWidth > 1 && billboardHeight > 0.5) { // Only add if reasonably sized
-                            const billboard = createBillboard(billboardWidth, billboardHeight, "Itamar");
-
-                            // Position slightly above middle, below top edge
-                            const billboardY = Math.min(buildingHeight * 0.6, buildingHeight - billboardHeight / 2 - 0.5);
-
-                             const side = Math.floor(Math.random() * 4);
-                             const offset = 0.1; // Offset from building face
-                             switch(side) {
-                                 case 0: // +X side
-                                     billboard.position.set(blockCenterX + buildingWidth / 2 + offset, billboardY, blockCenterZ);
-                                     billboard.rotation.y = -Math.PI / 2; break;
-                                 case 1: // -X side
-                                     billboard.position.set(blockCenterX - buildingWidth / 2 - offset, billboardY, blockCenterZ);
-                                     billboard.rotation.y = Math.PI / 2; break;
-                                 case 2: // +Z side
-                                     billboard.position.set(blockCenterX, billboardY, blockCenterZ + buildingDepth / 2 + offset);
-                                     billboard.rotation.y = Math.PI; break;
-                                 case 3: // -Z side
-                                     billboard.position.set(blockCenterX, billboardY, blockCenterZ - buildingDepth / 2 - offset);
-                                     billboard.rotation.y = 0; break;
-                             }
-                             scene.add(billboard);
-                         }
-                    }
-
-                    // Street furniture (populate instance data)
-                    const sidewalkXPos = blockCenterX - (buildingBlockSize + streetWidth)/2 + roadWidth/2 + sidewalkWidth/2;
-                    const sidewalkZPos = blockCenterZ - (buildingBlockSize + streetWidth)/2 + roadWidth/2 + sidewalkWidth/2;
-                    const furnitureSpacing = buildingBlockSize / 3;
-
-                    for (let k = 0; k < 3; k++) {
-                        const offset = furnitureSpacing * k + furnitureSpacing * 0.5 - buildingBlockSize*0.5;
-                        placeRandomSidewalkFurniture(blockCenterX + offset, sidewalkZPos + (buildingBlockSize + streetWidth) - sidewalkWidth, 0); // Top
-                        placeRandomSidewalkFurniture(blockCenterX + offset, sidewalkZPos, Math.PI); // Bottom
-                        placeRandomSidewalkFurniture(sidewalkXPos, blockCenterZ + offset, Math.PI / 2); // Left
-                        placeRandomSidewalkFurniture(sidewalkXPos + (buildingBlockSize + streetWidth) - sidewalkWidth, blockCenterZ + offset, -Math.PI / 2); // Right
-                    }
-                }
-            }
+            lamppostGroup.position.set(x, y, z); // Position the entire group
+            lamppostGroup.rotation.y = Math.random() * Math.PI * 2; // Random rotation
+            scene.add(lamppostGroup);
+            lampposts.push({ mesh: lamppostGroup, light: pointLight, bulb: bulb });
         }
 
-        // Helper function to place random furniture (now adds instance data or creates unique objects)
-        function placeRandomSidewalkFurniture(x, z, rotation) {
-            const rand = Math.random();
-            const sidewalkInnerEdgeOffset = sidewalkWidth / 3;
-            let placeX = x, placeZ = z;
+        function createBench(x, y, z, rotationY) {
+            // (Bench creation code remains largely the same as before)
+            const benchWidth = 1.5;
+            const benchDepth = 0.5;
+            const benchHeight = 0.4;
+            const legHeight = 0.3;
+            const legSize = 0.1;
+            const backHeight = 0.5;
+            const plankThickness = 0.05;
 
-            // Adjust position inwards (same logic as before)
-             if (rotation === 0) placeZ -= sidewalkInnerEdgeOffset;
-             else if (rotation === Math.PI) placeZ += sidewalkInnerEdgeOffset;
-             else if (rotation === Math.PI / 2) placeX += sidewalkInnerEdgeOffset;
-             else if (rotation === -Math.PI / 2) placeX -= sidewalkInnerEdgeOffset;
+            const benchGroup = new THREE.Group();
+            const benchMat = materials.bench;
+            const legMat = materials.lamppost; // Metal legs
 
-            if (ENABLE_INSTANCING) {
-                if (rand < 0.25) { addLamppostInstance(placeX, placeZ); }
-                else if (rand < 0.45) { addBenchInstance(placeX, placeZ, rotation); }
-                else if (rand < 0.65) { addTreeInstance(placeX, placeZ); }
-                else if (rand < 0.75) { addTrashCanInstance(placeX, placeZ); }
-                else if (rand < 0.85) { addFireHydrantInstance(placeX, placeZ); }
-                else if (rand < 0.90) { createBusStop(placeX, placeZ, rotation); } // Keep bus stop unique
-            } else { // Original non-instanced way
-                 if (rand < 0.25) { /* Call original createLamppost */ } // Need original functions if not instancing
-                 // ... etc for other types ...
-                 // For simplicity, this example focuses on the instanced path
-                 // If you need non-instanced, you'd call the original create... functions here
+            // Seat planks
+            for (let i = 0; i < 3; i++) {
+                const plank = new THREE.Mesh(geometries.box, benchMat);
+                plank.scale.set(benchWidth, plankThickness, benchDepth / 3.5);
+                plank.position.set(0, legHeight + plankThickness / 2, (i - 1) * (benchDepth / 3));
+                plank.castShadow = true; benchGroup.add(plank);
             }
+            // Legs
+            const legPositions = [ { x: -benchWidth/2 + legSize, z: -benchDepth/2 + legSize }, { x: benchWidth/2 - legSize, z: -benchDepth/2 + legSize }, { x: -benchWidth/2 + legSize, z: benchDepth/2 - legSize }, { x: benchWidth/2 - legSize, z: benchDepth/2 - legSize }, ];
+            legPositions.forEach(pos => { const leg = new THREE.Mesh(geometries.box, legMat); leg.scale.set(legSize, legHeight, legSize); leg.position.set(pos.x, legHeight / 2, pos.z); leg.castShadow = true; benchGroup.add(leg); });
+            // Back rest
+            if (Math.random() > 0.3) { for (let i = 0; i < 2; i++) { const plank = new THREE.Mesh(geometries.box, benchMat); plank.scale.set(benchWidth, plankThickness, backHeight / 2.5); plank.position.set(0, legHeight + backHeight/2 + (i - 0.5) * (backHeight / 2), -benchDepth / 2 - plankThickness); plank.rotation.x = Math.PI / 12; plank.castShadow = true; benchGroup.add(plank); } const supportPositions = [-benchWidth / 2 + legSize, benchWidth / 2 - legSize]; supportPositions.forEach(sx => { const support = new THREE.Mesh(geometries.box, legMat); support.scale.set(legSize, legHeight + backHeight, legSize); support.position.set(sx, (legHeight + backHeight) / 2, -benchDepth / 2); support.rotation.x = Math.PI / 12; support.castShadow = true; benchGroup.add(support); }); }
+
+            benchGroup.position.set(x, y, z);
+            benchGroup.rotation.y = rotationY;
+            scene.add(benchGroup);
         }
 
-        // --- Setup Instanced Meshes ---
-        function setupInstancedMeshes() {
-            if (!ENABLE_INSTANCING) return;
+        function createTree(x, y, z) {
+             // (Tree creation code remains largely the same as before)
+            const trunkHeight = Math.random() * 2.5 + 1.5; // Slightly taller trees
+            const trunkRadius = trunkHeight * 0.08;
+            const leavesHeight = trunkHeight * (Math.random() * 1.2 + 1.0);
+            const leavesRadius = trunkHeight * (Math.random() * 0.6 + 0.5);
 
-            // Lamppost Instancing
-            if (instanceData.lamppost.count > 0) {
-                const postHeight = 5;
-                const geometry = new THREE.CylinderGeometry(0.1, 0.1, postHeight, 8);
-                // Bulb geometry (optional visual element)
-                 const bulbGeo = new THREE.SphereGeometry(0.3, 16, 8);
-                 bulbGeo.translate(0, postHeight + 0.1, 0); // Position bulb relative to post base
+            const treeGroup = new THREE.Group();
+            const trunk = new THREE.Mesh(geometries.cylinder, materials.treeTrunk);
+            trunk.scale.set(trunkRadius * 2, trunkHeight, trunkRadius * 2);
+            trunk.position.y = trunkHeight / 2;
+            trunk.castShadow = true; treeGroup.add(trunk);
 
-                 // Combine post and bulb into one geometry for instancing
-                 // Note: This requires BufferGeometryUtils if available, or manual merging.
-                 // Simplified: Just instance the post for now.
-                 // const combinedGeo = BufferGeometryUtils.mergeGeometries([geometry, bulbGeo]);
+            // Leaves (Use sphere for slightly different look)
+            const leaves = new THREE.Mesh(geometries.sphere, materials.treeLeaves);
+            leaves.scale.set(leavesRadius * 1.5, leavesHeight * 0.8, leavesRadius * 1.5); // More spherical
+            leaves.position.y = trunkHeight + leavesHeight * 0.3;
+            leaves.castShadow = true; treeGroup.add(leaves);
 
-                const mesh = new THREE.InstancedMesh(geometry, materials.lamppost, instanceData.lamppost.count);
-                mesh.castShadow = true; // Instances can cast shadow
-                mesh.receiveShadow = false; // Not usually necessary
-
-                const tempObject = new THREE.Object3D();
-                for (let i = 0; i < instanceData.lamppost.count; i++) {
-                    tempObject.position.set(
-                        instanceData.lamppost.positions[i*3],
-                        instanceData.lamppost.positions[i*3+1],
-                        instanceData.lamppost.positions[i*3+2]
-                    );
-                    tempObject.updateMatrix();
-                    mesh.setMatrixAt(i, tempObject.matrix);
-                }
-                mesh.instanceMatrix.needsUpdate = true;
-                instancedMeshes.lamppost = mesh;
-                scene.add(mesh);
-            }
-
-            // Bench Instancing
-             if (instanceData.bench.count > 0) {
-                 // Create bench geometry (simplified for instancing example - just seat)
-                 const seatWidth = 1.5; const seatDepth = 0.4; const seatHeight = 0.4;
-                 const geometry = new THREE.BoxGeometry(seatWidth, 0.1, seatDepth);
-                 geometry.translate(0, seatHeight, 0); // Position seat correctly
-
-                 // Could combine legs too, but keep simple. Use wood material.
-                 const mesh = new THREE.InstancedMesh(geometry, materials.benchWood, instanceData.bench.count);
-                 mesh.castShadow = false; // Disable shadow for benches
-
-                 for (let i = 0; i < instanceData.bench.count; i++) {
-                     mesh.setMatrixAt(i, instanceData.bench.matrices[i]);
-                 }
-                 mesh.instanceMatrix.needsUpdate = true;
-                 instancedMeshes.bench = mesh;
-                 scene.add(mesh);
-             }
-
-             // Tree Trunk Instancing
-             if (instanceData.treeTrunk.count > 0) {
-                 const trunkHeight = 2.5; // Use average height for base geo
-                 const trunkRadius = 0.15;
-                 // Base geometry, origin at bottom center
-                 const geometry = new THREE.CylinderGeometry(trunkRadius * 0.7, trunkRadius, trunkHeight, 8);
-                 geometry.translate(0, trunkHeight/2, 0); // Translate origin to base
-
-                 const mesh = new THREE.InstancedMesh(geometry, materials.treeTrunk, instanceData.treeTrunk.count);
-                 mesh.castShadow = true;
-
-                 const tempObject = new THREE.Object3D();
-                 for (let i = 0; i < instanceData.treeTrunk.count; i++) {
-                     tempObject.position.set(
-                         instanceData.treeTrunk.positions[i*3],
-                         instanceData.treeTrunk.positions[i*3+1],
-                         instanceData.treeTrunk.positions[i*3+2]
-                     );
-                     // Add scaling here if trunk geo needs non-uniform scaling per instance
-                     tempObject.updateMatrix();
-                     mesh.setMatrixAt(i, tempObject.matrix);
-                 }
-                 mesh.instanceMatrix.needsUpdate = true;
-                 instancedMeshes.treeTrunk = mesh;
-                 scene.add(mesh);
-             }
-
-             // Tree Leaves Instancing
-              if (instanceData.treeLeaves.count > 0) {
-                  const baseRadius = 1; const baseHeight = 1;
-                  // Base Cone geometry, origin at center. We will scale and position instances.
-                  const geometry = new THREE.ConeGeometry(baseRadius, baseHeight, 8);
-
-                  const mesh = new THREE.InstancedMesh(geometry, materials.treeLeaves, instanceData.treeLeaves.count);
-                  mesh.castShadow = true;
-
-                  const tempObject = new THREE.Object3D();
-                  for (let i = 0; i < instanceData.treeLeaves.count; i++) {
-                      tempObject.position.set(
-                          instanceData.treeLeaves.positions[i*3],
-                          instanceData.treeLeaves.positions[i*3+1],
-                          instanceData.treeLeaves.positions[i*3+2]
-                      );
-                      tempObject.scale.set(
-                          instanceData.treeLeaves.scales[i*3],
-                          instanceData.treeLeaves.scales[i*3+1],
-                          instanceData.treeLeaves.scales[i*3+2]
-                      );
-                      tempObject.updateMatrix();
-                      mesh.setMatrixAt(i, tempObject.matrix);
-                  }
-                  mesh.instanceMatrix.needsUpdate = true;
-                  instancedMeshes.treeLeaves = mesh;
-                  scene.add(mesh);
-              }
-
-            // Trash Can Instancing
-            if (instanceData.trashCan.count > 0) {
-                const canHeight = 0.8; const canRadius = 0.25;
-                const geometry = new THREE.CylinderGeometry(canRadius, canRadius * 0.9, canHeight, 16);
-                geometry.translate(0, canHeight/2, 0); // Origin at base
-                const mesh = new THREE.InstancedMesh(geometry, materials.trashCan, instanceData.trashCan.count);
-                mesh.castShadow = false;
-                const tempObject = new THREE.Object3D();
-                for (let i = 0; i < instanceData.trashCan.count; i++) {
-                     tempObject.position.set(
-                         instanceData.trashCan.positions[i*3],
-                         instanceData.trashCan.positions[i*3+1],
-                         instanceData.trashCan.positions[i*3+2]
-                     );
-                     tempObject.updateMatrix();
-                     mesh.setMatrixAt(i, tempObject.matrix);
-                }
-                mesh.instanceMatrix.needsUpdate = true;
-                instancedMeshes.trashCan = mesh;
-                scene.add(mesh);
-            }
-
-            // Fire Hydrant Instancing (Simplified Geometry)
-             if (instanceData.hydrant.count > 0) {
-                 const mainHeight = 0.6; const mainRadius = 0.1;
-                 // Simplified single cylinder for instancing example
-                 const geometry = new THREE.CylinderGeometry(mainRadius, mainRadius, mainHeight, 12);
-                 geometry.translate(0, mainHeight/2, 0); // Origin at base
-                 const mesh = new THREE.InstancedMesh(geometry, materials.hydrant, instanceData.hydrant.count);
-                 mesh.castShadow = false;
-                 const tempObject = new THREE.Object3D();
-                 for (let i = 0; i < instanceData.hydrant.count; i++) {
-                     tempObject.position.set(
-                         instanceData.hydrant.positions[i*3],
-                         instanceData.hydrant.positions[i*3+1],
-                         instanceData.hydrant.positions[i*3+2]
-                     );
-                     tempObject.updateMatrix();
-                     mesh.setMatrixAt(i, tempObject.matrix);
-                 }
-                 mesh.instanceMatrix.needsUpdate = true;
-                 instancedMeshes.hydrant = mesh;
-                 scene.add(mesh);
-             }
-
-             // Road Dash Instancing
-              if (instanceData.roadDash.count > 0) {
-                  const geometry = new THREE.PlaneGeometry(1, 1); // Base 1x1 plane
-                  const mesh = new THREE.InstancedMesh(geometry, materials.roadMarking, instanceData.roadDash.count);
-                  mesh.receiveShadow = false;
-                  mesh.castShadow = false;
-
-                  for (let i = 0; i < instanceData.roadDash.count; i++) {
-                      mesh.setMatrixAt(i, instanceData.roadDash.matrices[i]);
-                  }
-                  mesh.instanceMatrix.needsUpdate = true;
-                  instancedMeshes.roadDash = mesh;
-                  scene.add(mesh);
-              }
-
-
+            treeGroup.position.set(x, y, z);
+            scene.add(treeGroup);
         }
 
-
-        // --- Dynamic Elements (Cars, Pedestrians) ---
 
         function createCar() {
-            // Keep cars as individual objects for unique movement/headlights
-            // Ensure headlight spotlights do NOT cast shadows
             const carGroup = new THREE.Group();
-            // ... (car geometry setup - use shared mats where possible) ...
-            const colors = [0xff0000, 0x0000ff, 0x00ff00, 0xffff00, 0xffa500, 0x808080, 0xffffff, 0x000000, 0x00ffff, 0xff00ff];
-            const carColor = colors[Math.floor(Math.random() * colors.length)];
-            const bodyMaterial = new THREE.MeshStandardMaterial({ color: carColor }); // Unique color per car
 
-            const bodyHeight = 0.6; const bodyWidth = 1.0; const bodyLength = 1.8;
-            const bodyGeometry = new THREE.BoxGeometry(bodyLength, bodyHeight, bodyWidth);
-            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-            body.castShadow = true; // Cars cast shadows
-            body.position.y = bodyHeight / 2;
+            // Body
+            const bodyMat = materials.carBody[Math.floor(Math.random() * materials.carBody.length)];
+            const body = new THREE.Mesh(geometries.box, bodyMat);
+            body.scale.set(CAR_WIDTH, CAR_HEIGHT * 0.6, CAR_LENGTH);
+            body.position.y = CAR_HEIGHT * 0.3;
+            body.castShadow = true;
             carGroup.add(body);
 
-            const roofHeight = 0.4; const roofWidth = bodyWidth * 0.8; const roofLength = bodyLength * 0.6;
-            const roofGeometry = new THREE.BoxGeometry(roofLength, roofHeight, roofWidth);
-            const roof = new THREE.Mesh(roofGeometry, bodyMaterial); // Same color
-            roof.position.y = bodyHeight + roofHeight / 2;
-            roof.position.x = -bodyLength * 0.1;
-            roof.castShadow = true; // Roof casts shadow
-            carGroup.add(roof);
+            // Cabin
+            const cabin = new THREE.Mesh(geometries.box, materials.carWindow);
+            cabin.scale.set(CAR_WIDTH * 0.85, CAR_HEIGHT * 0.5, CAR_LENGTH * 0.55); // Slightly adjusted cabin size
+            cabin.position.y = CAR_HEIGHT * 0.8;
+            cabin.position.z = CAR_LENGTH * 0.05; // Centered slightly more
+            cabin.castShadow = true;
+            carGroup.add(cabin);
 
-            // Headlights (visual mesh)
-            const headlightGeo = new THREE.CylinderGeometry(0.1, 0.08, 0.1, 16);
-            const headlightMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x000000 }); // Material for bulb appearance
-            const headlightL = new THREE.Mesh(headlightGeo, headlightMat.clone()); // Clone for independent emissive control
-            const headlightR = new THREE.Mesh(headlightGeo, headlightMat.clone());
-            headlightL.rotation.z = Math.PI/2; headlightR.rotation.z = Math.PI/2;
-            headlightL.position.set(bodyLength/2, bodyHeight/2, bodyWidth/3);
-            headlightR.position.set(bodyLength/2, bodyHeight/2, -bodyWidth/3);
-            headlightL.castShadow = false; headlightR.castShadow = false;
-            carGroup.add(headlightL); carGroup.add(headlightR);
+            // Wheels
+            const wheelRadius = CAR_HEIGHT * 0.2;
+            const wheelThickness = CAR_WIDTH * 0.15;
+            const wheelGeo = new THREE.CylinderGeometry(wheelRadius, wheelRadius, wheelThickness, 16);
+            wheelGeo.rotateZ(Math.PI / 2);
+            const wheelPositions = [ { x: CAR_WIDTH / 2, y: wheelRadius, z: CAR_LENGTH / 2 * 0.65 }, { x: -CAR_WIDTH / 2, y: wheelRadius, z: CAR_LENGTH / 2 * 0.65 }, { x: CAR_WIDTH / 2, y: wheelRadius, z: -CAR_LENGTH / 2 * 0.65 }, { x: -CAR_WIDTH / 2, y: wheelRadius, z: -CAR_LENGTH / 2 * 0.65 }, ]; // Adjusted wheel positions
+            wheelPositions.forEach(pos => { const wheel = new THREE.Mesh(wheelGeo, materials.carWheel); wheel.position.set(pos.x, pos.y, pos.z); carGroup.add(wheel); });
 
-            // Headlight SpotLights (actual light source)
-            const spotLightIntensity = 60;
-            const spotDistance = 25;
-            const spotAngle = Math.PI/7;
-            const headLightLSource = new THREE.SpotLight(0xffffcc, 0, spotDistance, spotAngle, 0.4, 1.2);
-            headLightLSource.castShadow = false; // <<< NO SHADOWS FOR SPOTLIGHTS
-            headLightLSource.position.set(bodyLength/2, bodyHeight/2, bodyWidth/3);
-            headLightLSource.target.position.set(bodyLength/2 + 5, bodyHeight/2, bodyWidth/3); // Initial target
-            carGroup.add(headLightLSource); carGroup.add(headLightLSource.target);
+            // Define path and initial state
+            const path = getRandomRoadPath();
+            if (!path) return; // Skip if no valid path found (e.g., city too small)
 
-            const headLightRSource = new THREE.SpotLight(0xffffcc, 0, spotDistance, spotAngle, 0.4, 1.2);
-            headLightRSource.castShadow = false; // <<< NO SHADOWS FOR SPOTLIGHTS
-            headLightRSource.position.set(bodyLength/2, bodyHeight/2, -bodyWidth/3);
-            headLightRSource.target.position.set(bodyLength/2 + 5, bodyHeight/2, -bodyWidth/3); // Initial target
-            carGroup.add(headLightRSource); carGroup.add(headLightRSource.target);
+            carGroup.position.copy(path.start);
+            carGroup.lookAt(path.end);
 
-            const car = {
+            const carObj = {
                 mesh: carGroup,
-                headlightMaterials: [headlightL.material, headlightR.material],
-                headlights: [headLightLSource, headLightRSource],
-                headlightIntensity: spotLightIntensity,
-                speed: 6 + Math.random() * 8,
-                direction: Math.random() < 0.5 ? 1 : -1,
-                axis: Math.random() < 0.5 ? 'x' : 'z',
-                laneOffset: (Math.random() < 0.5 ? -1 : 1) * (roadWidth / 4),
-                pathLimit: citySize * 1.1
+                path: path,
+                progress: 0, // Start at the beginning of the path
+                speed: (Math.random() * 0.4 + 0.6) * 6, // Adjusted base speed
+                currentSpeed: 0, // Actual speed used in movement
+                state: 'accelerating', // 'accelerating', 'moving', 'braking', 'stopped'
+                targetSpeed: (Math.random() * 0.4 + 0.6) * 6 * settings.carSpeedMultiplier, // Desired speed
+                acceleration: 2.0, // Units per second^2
+                brakingForce: 5.0, // Units per second^2
+                direction: new THREE.Vector3().subVectors(path.end, path.start).normalize(),
+                stoppingAtLight: null, // Reference to the traffic light it's stopping for
+                stoppingForCar: null, // Reference to the car it's stopping for
             };
+            carObj.currentSpeed = carObj.targetSpeed; // Start at target speed initially for simplicity
 
-             // Initial positioning (same logic)
-             const numBlocks = Math.floor(citySize / (buildingBlockSize + streetWidth));
-             const streetIndex = Math.floor(Math.random() * (2 * numBlocks + 1)) - numBlocks;
-             const streetPos = streetIndex * (buildingBlockSize + streetWidth);
-             if (car.axis === 'x') {
-                 car.mesh.position.z = streetPos + car.laneOffset * car.direction;
-                 car.mesh.position.x = (Math.random() - 0.5) * car.pathLimit * 2;
-                 if (car.direction < 0) car.mesh.rotation.y = Math.PI;
-             } else {
-                 car.mesh.position.x = streetPos + car.laneOffset * car.direction;
-                 car.mesh.position.z = (Math.random() - 0.5) * car.pathLimit * 2;
-                 car.mesh.rotation.y = Math.PI / 2 * -car.direction;
-             }
-             car.mesh.position.y = 0.01; // Keep slightly above ground
-
-             // Manually update target positions after setting car position
-            car.headlights.forEach(light => {
-                light.target.parent = scene; // Ensure target is in world space
-                if(car.axis === 'x') light.target.position.set(car.mesh.position.x + 5 * car.direction, light.position.y, car.mesh.position.z + light.position.z);
-                else light.target.position.set(car.mesh.position.x + light.position.x, light.position.y, car.mesh.position.z + 5 * car.direction);
-                light.target.updateMatrixWorld();
-            });
-
-
+            carGroup.position.lerpVectors(path.start, path.end, carObj.progress);
+            carGroup.visible = settings.showCars;
             scene.add(carGroup);
-            return car;
-        }
-
-        function spawnCars(count) { for (let i = 0; i < count; i++) cars.push(createCar()); }
-
-        function updateCars(deltaTime) {
-            const limit = citySize * 1.1;
-            cars.forEach(car => {
-                // Basic movement logic (same as before)
-                if (car.axis === 'x') {
-                    car.mesh.position.x += car.speed * car.direction * deltaTime;
-                    if (car.direction > 0 && car.mesh.position.x > limit) car.mesh.position.x = -limit;
-                    else if (car.direction < 0 && car.mesh.position.x < -limit) car.mesh.position.x = limit;
-                } else {
-                    car.mesh.position.z += car.speed * car.direction * deltaTime;
-                    if (car.direction > 0 && car.mesh.position.z > limit) car.mesh.position.z = -limit;
-                    else if (car.direction < 0 && car.mesh.position.z < -limit) car.mesh.position.z = limit;
-                }
-
-                // Update headlight target positions continuously
-                car.headlights.forEach(light => {
-                     if (car.axis === 'x') {
-                         light.target.position.x = car.mesh.position.x + 5 * car.direction;
-                         light.target.position.z = car.mesh.position.z + light.position.z; // Use light's local Z relative to car's world Z
-                     } else {
-                         light.target.position.x = car.mesh.position.x + light.position.x; // Use light's local X relative to car's world X
-                         light.target.position.z = car.mesh.position.z + 5 * car.direction;
-                     }
-                    // Ensure target's Y is correct relative to world (should be same height as light source)
-                    light.target.position.y = car.mesh.position.y + light.position.y;
-                    light.target.updateMatrixWorld();
-                });
-            });
+            cars.push(carObj);
         }
 
         function createPedestrian() {
-            // Keep pedestrians as individual objects for state/movement
-            const height = 1.6 + (Math.random() - 0.5) * 0.2;
-            const radius = 0.15;
-            const geometry = new THREE.CapsuleGeometry(radius, height - 2 * radius, 4, 8);
-            const material = new THREE.MeshStandardMaterial({ color: new THREE.Color(Math.random() * 0.8, Math.random() * 0.8, Math.random() * 0.8)});
-            const pedestrianMesh = new THREE.Mesh(geometry, material);
-            pedestrianMesh.castShadow = false; // <<< PEDESTRIANS DON'T CAST SHADOWS
-            pedestrianMesh.position.y = height / 2; // Adjust base
+            const pedGroup = new THREE.Group();
 
-             const pedestrian = { /* ... (same properties as before) ... */
-                 mesh: pedestrianMesh,
-                 speed: 0.8 + Math.random() * 0.7,
-                 direction: Math.random() < 0.5 ? 1 : -1,
-                 axis: Math.random() < 0.5 ? 'x' : 'z',
-                 pathLimit: citySize * 1.1,
-                 sidewalkOffset: (Math.random() - 0.5) * (sidewalkWidth * 0.6),
-                 state: 'walking',
-                 waitTimer: 0,
-                 crossingTarget: null,
-                 currentSidewalkPos: 0
-             };
-             // Initial positioning (same logic as before)
-             const numBlocks = Math.floor(citySize / (buildingBlockSize + streetWidth));
-             const streetIndex = Math.floor(Math.random() * (2 * numBlocks + 1)) - numBlocks;
-             const streetPos = streetIndex * (buildingBlockSize + streetWidth);
-             const sidewalkEdge = roadWidth / 2 + sidewalkWidth / 2;
-             if (pedestrian.axis === 'x') {
-                 pedestrian.currentSidewalkPos = streetPos + (Math.random() < 0.5 ? -1 : 1) * sidewalkEdge;
-                 pedestrian.mesh.position.z = pedestrian.currentSidewalkPos + pedestrian.sidewalkOffset;
-                 pedestrian.mesh.position.x = (Math.random() - 0.5) * pedestrian.pathLimit * 2;
-                 pedestrian.mesh.rotation.y = pedestrian.direction > 0 ? 0 : Math.PI;
-             } else {
-                 pedestrian.currentSidewalkPos = streetPos + (Math.random() < 0.5 ? -1 : 1) * sidewalkEdge;
-                 pedestrian.mesh.position.x = pedestrian.currentSidewalkPos + pedestrian.sidewalkOffset;
-                 pedestrian.mesh.position.z = (Math.random() - 0.5) * pedestrian.pathLimit * 2;
-                 pedestrian.mesh.rotation.y = pedestrian.direction > 0 ? -Math.PI / 2 : Math.PI/2;
-             }
-             pedestrian.mesh.position.y = height / 2;
+            // Body/Torso
+            const bodyMat = materials.pedestrianBody.clone(); // Clone to set unique color
+            bodyMat.color.setHSL(Math.random(), 0.6, 0.5); // Random HSL color
+            const torso = new THREE.Mesh(geometries.pedestrianTorso, bodyMat);
+            torso.castShadow = true;
+            torso.position.y = (PEDESTRIAN_HEIGHT * 0.6 + PEDESTRIAN_RADIUS * 0.9) / 2; // Position torso base
+            pedGroup.add(torso);
 
-             scene.add(pedestrianMesh);
-             return pedestrian;
-         }
+            // Head
+            const head = new THREE.Mesh(geometries.pedestrianHead, materials.pedestrianHead);
+            head.castShadow = true;
+            head.position.y = torso.position.y + (PEDESTRIAN_HEIGHT * 0.6) / 2 + PEDESTRIAN_RADIUS * 1.1 * 0.8; // Position head on top
+            pedGroup.add(head);
 
-        function spawnPedestrians(count) { for (let i = 0; i < count; i++) pedestrians.push(createPedestrian()); }
+            const path = getRandomSidewalkPath();
+            if (!path) return; // Skip if no path
 
-        function updatePedestrians(deltaTime) { /* ... (Keep existing pedestrian update logic) ... */
-             const limit = citySize * 1.1;
-             const crossingSpeedFactor = 0.8;
+            pedGroup.position.copy(path.start);
+            pedGroup.lookAt(path.end.x, pedGroup.position.y, path.end.z);
+            pedGroup.position.y = 0.1; // Base height on sidewalk level
 
-             pedestrians.forEach(p => {
-                 switch (p.state) {
-                     case 'walking':
-                         let currentPos, nextPos;
-                         const lookAheadDist = 1.0;
-                         if (p.axis === 'x') {
-                             p.mesh.position.x += p.speed * p.direction * deltaTime;
-                             currentPos = p.mesh.position.x; nextPos = currentPos + p.direction * lookAheadDist;
-                         } else {
-                             p.mesh.position.z += p.speed * p.direction * deltaTime;
-                             currentPos = p.mesh.position.z; nextPos = currentPos + p.direction * lookAheadDist;
-                         }
-                         const streetCrossPos = Math.round(nextPos / (buildingBlockSize + streetWidth)) * (buildingBlockSize + streetWidth);
-                         const distToIntersection = Math.abs(nextPos - streetCrossPos);
-                         const onSidewalkNearIntersection = distToIntersection < (roadWidth / 2 + sidewalkWidth);
+            const pedestrianObj = {
+                mesh: pedGroup,
+                path: path,
+                progress: Math.random(),
+                speed: (Math.random() * 0.3 + 0.7) * 1.2, // Slightly faster base speed
+            };
 
-                         if (onSidewalkNearIntersection && Math.random() < 0.002) {
-                             p.state = 'waiting'; p.waitTimer = 1 + Math.random() * 4;
-                             const curbOffset = (roadWidth / 2 + sidewalkWidth * 0.2) * p.direction;
-                             if (p.axis === 'x') p.mesh.position.x = streetCrossPos - curbOffset;
-                             else p.mesh.position.z = streetCrossPos - curbOffset;
-                         } else {
-                            if (p.direction > 0 && currentPos > limit) { if (p.axis === 'x') p.mesh.position.x = -limit; else p.mesh.position.z = -limit; }
-                            else if (p.direction < 0 && currentPos < -limit) { if (p.axis === 'x') p.mesh.position.x = limit; else p.mesh.position.z = limit; }
-                         }
-                         break;
-                     case 'waiting':
-                         p.waitTimer -= deltaTime;
-                         if (p.waitTimer <= 0) {
-                             p.state = 'crossing'; p.crossingTarget = new THREE.Vector3().copy(p.mesh.position);
-                             const crossingDist = roadWidth + sidewalkWidth * 0.4;
-                             if (p.axis === 'x') {
-                                 const currentStreetX = Math.round(p.mesh.position.x / (buildingBlockSize + streetWidth)) * (buildingBlockSize + streetWidth);
-                                 const zDir = p.currentSidewalkPos > currentStreetX ? 1 : -1; // Check if Z > 0 relative to street center? This seems wrong. Should be based on which sidewalk Z.
-                                 // Simpler: cross perpendicular to current sidewalk Z
-                                 const zDirCross = p.currentSidewalkPos > streetCrossPos ? -1 : 1; // If on +Z sidewalk, cross to -Z sidewalk etc. No, streetCrossPos is X here.
-                                 const zDirCrossFinal = (p.mesh.position.z > Math.round(p.mesh.position.z / (buildingBlockSize+streetWidth))*(buildingBlockSize+streetWidth)) ? -1 : 1; // If current Z > street Z center, cross south
-
-
-                                 p.crossingTarget.z += crossingDist * zDirCrossFinal; // Need to determine correct Z direction
-                                 p.crossingTarget.x = currentStreetX - (roadWidth / 2 + sidewalkWidth * 0.2) * p.direction;
-                             } else {
-                                 const currentStreetZ = Math.round(p.mesh.position.z / (buildingBlockSize + streetWidth)) * (buildingBlockSize + streetWidth);
-                                 const xDirCrossFinal = (p.mesh.position.x > Math.round(p.mesh.position.x / (buildingBlockSize+streetWidth))*(buildingBlockSize+streetWidth)) ? -1 : 1; // If current X > street X center, cross west
-
-                                 p.crossingTarget.x += crossingDist * xDirCrossFinal; // Need to determine correct X direction
-                                 p.crossingTarget.z = currentStreetZ - (roadWidth / 2 + sidewalkWidth * 0.2) * p.direction;
-                             }
-                             p.mesh.lookAt(p.crossingTarget.x, p.mesh.position.y, p.crossingTarget.z);
-                         }
-                         break;
-                     case 'crossing':
-                         const moveVector = new THREE.Vector3().subVectors(p.crossingTarget, p.mesh.position);
-                         const distanceToTarget = moveVector.length();
-                         if (distanceToTarget < 0.1) {
-                             p.state = 'walking'; p.axis = p.axis === 'x' ? 'z' : 'x'; p.direction = Math.random() < 0.5 ? 1 : -1;
-                             p.sidewalkOffset = (Math.random() - 0.5) * (sidewalkWidth * 0.6);
-                             if (p.axis === 'x') {
-                                 const streetIndexZ = Math.round(p.mesh.position.z / (buildingBlockSize + streetWidth));
-                                 const sideZ = p.mesh.position.z > streetIndexZ * (buildingBlockSize + streetWidth) ? 1 : -1;
-                                 p.currentSidewalkPos = streetIndexZ * (buildingBlockSize + streetWidth) + sideZ * (roadWidth/2 + sidewalkWidth/2);
-                                 p.mesh.position.z = p.currentSidewalkPos + p.sidewalkOffset;
-                                 p.mesh.rotation.y = p.direction > 0 ? 0 : Math.PI;
-                             } else {
-                                 const streetIndexX = Math.round(p.mesh.position.x / (buildingBlockSize + streetWidth));
-                                 const sideX = p.mesh.position.x > streetIndexX * (buildingBlockSize + streetWidth) ? 1 : -1;
-                                 p.currentSidewalkPos = streetIndexX * (buildingBlockSize + streetWidth) + sideX * (roadWidth/2 + sidewalkWidth/2);
-                                 p.mesh.position.x = p.currentSidewalkPos + p.sidewalkOffset;
-                                 p.mesh.rotation.y = p.direction > 0 ? -Math.PI / 2 : Math.PI / 2;
-                             }
-                         } else {
-                             moveVector.normalize().multiplyScalar(p.speed * crossingSpeedFactor * deltaTime);
-                             p.mesh.position.add(moveVector);
-                         }
-                         break;
-                 }
-             });
+            pedestrianObj.mesh.position.lerpVectors(path.start, path.end, pedestrianObj.progress);
+            pedestrianObj.mesh.position.y = 0.1; // Ensure Y position after lerp
+            pedestrianObj.mesh.visible = settings.showPedestrians;
+            scene.add(pedGroup);
+            pedestrians.push(pedestrianObj);
         }
 
-        // --- Traffic Light Logic ---
-        function setTrafficLightState(trafficLight, state) { /* ... (same) ... */
-            const darkIntensity = 0.1;
-            trafficLight.state = state;
-            trafficLight.materials.red.color.setScalar(state === 'red' ? 1 : darkIntensity);
-            trafficLight.materials.yellow.color.setScalar(state === 'yellow' ? 1 : darkIntensity);
-            trafficLight.materials.green.color.setScalar(state === 'green' ? 1 : darkIntensity);
-         }
-        function updateTrafficLights(deltaTime) { /* ... (same logic, maybe slightly simplified timing) ... */
-             const redDuration = 8; const greenDuration = 8; const yellowDuration = 2;
-             const cycleDuration = redDuration + greenDuration + yellowDuration;
+        function createTrafficLight(x, y, z, rotationY, intersectX, intersectZ, controlledDirections) {
+            const lightHeight = 3.5;
+            const poleRadius = 0.08;
+            const housingWidth = 0.35; // Slightly smaller
+            const housingHeight = 0.9;
+            const housingDepth = 0.25;
+            const lightRadius = housingWidth * 0.25;
 
-             trafficLights.forEach(tl => {
-                 tl.timer += deltaTime;
-                 const timeInCycle = tl.timer % cycleDuration;
-                 const currentState = tl.state; // Store current state before potential change
+            const tlGroup = new THREE.Group();
 
-                 if (currentState === 'green' && timeInCycle >= greenDuration) {
-                     setTrafficLightState(tl, 'yellow');
-                 } else if (currentState === 'yellow' && timeInCycle >= greenDuration + yellowDuration) {
-                     setTrafficLightState(tl, 'red');
-                 } else if (currentState === 'red' && timeInCycle >= cycleDuration) { // Use >= cycleDuration for wrap check
-                     // Timer wrapped, should be green now
-                     setTrafficLightState(tl, 'green');
-                     tl.timer = timeInCycle; // Reset timer relative to cycle start
-                 } else if (currentState === 'red' && timeInCycle < greenDuration) {
-                     // Handles starting in red phase and timer wrapping correctly
-                     if (tl.timer > cycleDuration) { // Ensure timer actually wrapped
-                         setTrafficLightState(tl, 'green');
-                     }
-                 }
-                 // Initial state check on first frame
-                  if (tl.timer < deltaTime * 2) { // Check near beginning
-                      if (timeInCycle >= greenDuration + yellowDuration) setTrafficLightState(tl, 'red');
-                      else if (timeInCycle >= greenDuration) setTrafficLightState(tl, 'yellow');
-                      else setTrafficLightState(tl, 'green');
-                  }
-             });
-         }
+            // Pole
+            const pole = new THREE.Mesh(geometries.cylinder, materials.lamppost);
+            pole.scale.set(poleRadius * 2, lightHeight, poleRadius * 2);
+            pole.position.y = lightHeight / 2;
+            pole.castShadow = true;
+            tlGroup.add(pole);
 
-        // --- Day/Night Cycle ---
+            // Housing
+            const housing = new THREE.Mesh(geometries.box, materials.trafficLightHousing);
+            housing.scale.set(housingWidth, housingHeight, housingDepth);
+            housing.position.y = lightHeight - housingHeight / 2; // Position housing relative to pole top
+            housing.castShadow = true;
+            tlGroup.add(housing); // Add housing to the main group
+
+            // Lights (Meshes) - Position relative to HOUSING center
+            const lightYStep = housingHeight / 3;
+            const lightZOffset = housingDepth / 2 + 0.01; // Slightly in front OF HOUSING
+
+            const redLight = new THREE.Mesh(geometries.sphere, materials.trafficLightRedOff);
+            redLight.scale.setScalar(lightRadius * 2);
+            redLight.position.set(0, lightYStep, lightZOffset); // Top light
+            housing.add(redLight); // *** Add lights to HOUSING ***
+
+            const yellowLight = new THREE.Mesh(geometries.sphere, materials.trafficLightYellowOff);
+            yellowLight.scale.setScalar(lightRadius * 2);
+            yellowLight.position.set(0, 0, lightZOffset); // Middle light
+            housing.add(yellowLight); // *** Add lights to HOUSING ***
+
+            const greenLight = new THREE.Mesh(geometries.sphere, materials.trafficLightGreenOff);
+            greenLight.scale.setScalar(lightRadius * 2);
+            greenLight.position.set(0, -lightYStep, lightZOffset); // Bottom light
+            housing.add(greenLight); // *** Add lights to HOUSING ***
+
+            tlGroup.position.set(x, y, z);
+            tlGroup.rotation.y = rotationY;
+            scene.add(tlGroup);
+
+            const trafficLightObj = {
+                mesh: tlGroup,
+                lights: { red: redLight, yellow: yellowLight, green: greenLight },
+                state: 'red', // 'red', 'yellow', 'green'
+                timer: Math.random() * 15,
+                cycleDuration: 18 + Math.random() * 6, // Slightly longer cycle
+                intersection: new THREE.Vector2(intersectX, intersectZ), // Store center of intersection
+                controlledDirections: controlledDirections, // Array of directions [0-3] it controls
+            };
+            trafficLights.push(trafficLightObj);
+            updateTrafficLightVisuals(trafficLightObj);
+        }
+
+
+        // --- Path Finding ---
+
+        function getRandomRoadPath() {
+            const halfCitySize = CITY_SIZE / 2;
+            const step = BLOCK_SIZE + ROAD_WIDTH;
+            const numBlocks = Math.floor(CITY_SIZE / step);
+            if (numBlocks <= 0) return null; // Not enough space
+
+            const roadOffset = ROAD_WIDTH / 4; // Lane offset from road center
+
+            let start = new THREE.Vector3();
+            let end = new THREE.Vector3();
+            const vertical = Math.random() > 0.5;
+
+            // Choose a random road line
+            const roadIndex = Math.floor(Math.random() * (numBlocks + 1)); // Index from 0 to numBlocks
+            const roadCenter = roadIndex * step - halfCitySize;
+
+            const laneOffset = (Math.random() > 0.5 ? roadOffset : -roadOffset);
+            const startEdge = -halfCitySize - ROAD_WIDTH; // Start outside visible area
+            const endEdge = halfCitySize + ROAD_WIDTH; // End outside visible area
+
+            if (vertical) {
+                // Vertical road (along Z axis)
+                const laneX = roadCenter - ROAD_WIDTH / 2 + laneOffset; // Adjust for road center vs block start
+                start.set(laneX, 0.1, startEdge);
+                end.set(laneX, 0.1, endEdge);
+            } else {
+                // Horizontal road (along X axis)
+                const laneZ = roadCenter - ROAD_WIDTH / 2 + laneOffset; // Adjust for road center vs block start
+                start.set(startEdge, 0.1, laneZ);
+                end.set(endEdge, 0.1, laneZ);
+            }
+
+             if (Math.random() > 0.5) [start, end] = [end, start]; // Random direction
+
+            return { start, end, length: start.distanceTo(end) };
+        }
+
+         function getRandomSidewalkPath() {
+            const halfCitySize = CITY_SIZE / 2;
+            const step = BLOCK_SIZE + ROAD_WIDTH;
+            const numBlocks = Math.floor(CITY_SIZE / step);
+             if (numBlocks <= 0) return null;
+
+            const sidewalkHeight = 0.1; // Pedestrian Y position
+            const sidewalkCenterOffset = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2; // Center of sidewalk strip
+
+            let start = new THREE.Vector3();
+            let end = new THREE.Vector3();
+            const verticalEdge = Math.random() > 0.5;
+            const blockIndexX = Math.floor(Math.random() * numBlocks);
+            const blockIndexZ = Math.floor(Math.random() * numBlocks);
+            const blockStartX = blockIndexX * step - halfCitySize; // Use block start, not road center
+            const blockStartZ = blockIndexZ * step - halfCitySize;
+
+            if (verticalEdge) { // Walk along N/S sidewalk
+                const edgeX = (Math.random() > 0.5) ? (blockStartX - sidewalkCenterOffset) : (blockStartX + BLOCK_SIZE + sidewalkCenterOffset);
+                start.set(edgeX, sidewalkHeight, blockStartZ - SIDEWALK_WIDTH / 2); // Start at one end of block sidewalk
+                end.set(edgeX, sidewalkHeight, blockStartZ + BLOCK_SIZE + SIDEWALK_WIDTH / 2); // End at other end
+            } else { // Walk along E/W sidewalk
+                const edgeZ = (Math.random() > 0.5) ? (blockStartZ - sidewalkCenterOffset) : (blockStartZ + BLOCK_SIZE + sidewalkCenterOffset);
+                start.set(blockStartX - SIDEWALK_WIDTH / 2, sidewalkHeight, edgeZ);
+                end.set(blockStartX + BLOCK_SIZE + SIDEWALK_WIDTH / 2, sidewalkHeight, edgeZ);
+            }
+
+             if (Math.random() > 0.5) [start, end] = [end, start];
+
+            return { start, end, length: start.distanceTo(end) };
+        }
+
+
+        // --- Update Functions ---
+
+        function updateCars(deltaTime) {
+            const safetyDistanceSq = settings.carSafetyDistance * settings.carSafetyDistance;
+
+            cars.forEach((car, carIndex) => {
+                if (!car.mesh.visible) return;
+
+                let targetSpeed = car.targetSpeed * settings.carSpeedMultiplier;
+                let braking = false;
+                car.stoppingAtLight = null; // Reset flags
+                car.stoppingForCar = null;
+
+                // --- Collision Avoidance ---
+                let distanceToObstacle = Infinity;
+                let obstacle = null;
+
+                for (let i = 0; i < cars.length; i++) {
+                    if (i === carIndex) continue; // Don't check self
+                    const otherCar = cars[i];
+                    if (!otherCar.mesh.visible) continue;
+
+                    // Simple check: are they roughly on the same path axis and ahead?
+                    const dotProd = car.direction.dot(otherCar.direction);
+                    if (dotProd > 0.9) { // Moving in roughly the same direction
+                        const vecToOther = new THREE.Vector3().subVectors(otherCar.mesh.position, car.mesh.position);
+                        const distanceSq = vecToOther.lengthSq();
+
+                        if (distanceSq < safetyDistanceSq * 4) { // Only check cars reasonably close
+                             const projection = vecToOther.dot(car.direction);
+                             if (projection > 0 && projection * projection < distanceSq * 1.1) { // Check if it's ahead (projection > 0) and not too far sideways
+                                if (projection < distanceToObstacle) {
+                                    distanceToObstacle = projection;
+                                    obstacle = otherCar;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (obstacle && distanceToObstacle * distanceToObstacle < safetyDistanceSq) {
+                    targetSpeed = 0; // Stop for car ahead
+                    braking = true;
+                    car.stoppingForCar = obstacle;
+                    // Optional: Match speed if close but not too close
+                    // if (distanceToObstacle * distanceToObstacle > safetyDistanceSq * 0.5) {
+                    //     targetSpeed = Math.min(targetSpeed, obstacle.currentSpeed * 0.9);
+                    // }
+                }
+
+                // --- Traffic Light Compliance ---
+                if (settings.trafficLightCompliance && !braking) { // Only check lights if not already braking for a car
+                    const nextIntersection = getNextIntersection(car.mesh.position, car.direction);
+                    if (nextIntersection) {
+                        const distanceToIntersectionCenter = car.mesh.position.distanceTo(nextIntersection.center);
+                        const stoppingDistance = (car.currentSpeed * car.currentSpeed) / (2 * car.brakingForce) + CAR_LENGTH; // Physics based + car length buffer
+
+                        if (distanceToIntersectionCenter < stoppingDistance + INTERSECTION_RADIUS) { // If within potential stopping range
+                            const relevantLight = findRelevantTrafficLight(nextIntersection.coords, car.direction);
+                            if (relevantLight && (relevantLight.state === 'red' || relevantLight.state === 'yellow')) {
+                                // Check if car is *before* the intersection line (approximate)
+                                const vecToIntersect = new THREE.Vector3().subVectors(nextIntersection.center, car.mesh.position);
+                                if (vecToIntersect.dot(car.direction) > -CAR_LENGTH / 2) { // If center is ahead or slightly behind front bumper
+                                     targetSpeed = 0; // Stop for light
+                                     braking = true;
+                                     car.stoppingAtLight = relevantLight;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // --- Update Speed ---
+                if (braking || targetSpeed < car.currentSpeed) {
+                    // Braking or decelerating
+                    car.currentSpeed = Math.max(0, car.currentSpeed - car.brakingForce * deltaTime);
+                    car.state = car.currentSpeed > 0.1 ? 'braking' : 'stopped';
+                } else if (targetSpeed > car.currentSpeed) {
+                    // Accelerating
+                    car.currentSpeed = Math.min(targetSpeed, car.currentSpeed + car.acceleration * deltaTime);
+                    car.state = 'accelerating';
+                } else {
+                    car.state = car.currentSpeed > 0.1 ? 'moving' : 'stopped';
+                }
+
+                // --- Update Position ---
+                const distanceThisFrame = car.currentSpeed * deltaTime;
+                car.progress += distanceThisFrame / car.path.length;
+
+                if (car.progress >= 1) {
+                    // Reached end, get new path
+                    const newPath = getRandomRoadPath();
+                    if (newPath) {
+                        car.path = newPath;
+                        car.progress = 0;
+                        car.mesh.position.copy(car.path.start);
+                        car.direction.subVectors(car.path.end, car.path.start).normalize();
+                        car.mesh.lookAt(car.path.end);
+                        car.targetSpeed = (Math.random() * 0.4 + 0.6) * 6; // Reset target speed
+                        car.state = 'accelerating';
+                    } else { // No new path, stop the car
+                        car.currentSpeed = 0;
+                        car.state = 'stopped';
+                        car.progress = 1; // Keep it at the end
+                    }
+                } else if (car.progress < 0) {
+                    // Handle potential negative progress if path reversed instantly (shouldn't happen often now)
+                    car.progress = 0;
+                    car.mesh.position.copy(car.path.start);
+                } else {
+                    // Interpolate position
+                    car.mesh.position.lerpVectors(car.path.start, car.path.end, car.progress);
+                    // Ensure car stays facing the direction of travel
+                    const lookTarget = new THREE.Vector3().addVectors(car.mesh.position, car.direction);
+                    car.mesh.lookAt(lookTarget);
+                }
+            });
+        }
+
+        // Helper: Get the next intersection a car is heading towards
+        function getNextIntersection(position, direction) {
+            const step = BLOCK_SIZE + ROAD_WIDTH;
+            const halfCitySize = CITY_SIZE / 2;
+            const lookAheadDistance = step; // How far to look for an intersection
+
+            const testPoint = new THREE.Vector3().addVectors(position, direction.clone().multiplyScalar(lookAheadDistance));
+
+            // Find the nearest grid intersection coordinates (center of intersection square)
+            const intersectX = Math.round((testPoint.x + ROAD_WIDTH / 2) / step) * step - ROAD_WIDTH / 2;
+            const intersectZ = Math.round((testPoint.z + ROAD_WIDTH / 2) / step) * step - ROAD_WIDTH / 2;
+
+            // Basic check if it's within city bounds
+            if (Math.abs(intersectX) <= halfCitySize && Math.abs(intersectZ) <= halfCitySize) {
+                const center = new THREE.Vector3(intersectX, 0, intersectZ);
+                // Check if the intersection is actually *ahead* of the car
+                const vecToIntersect = new THREE.Vector3().subVectors(center, position);
+                if (vecToIntersect.dot(direction) > 0) {
+                    return { center: center, coords: new THREE.Vector2(intersectX, intersectZ) };
+                }
+            }
+            return null;
+        }
+
+        // Helper: Find the traffic light controlling a car's direction at an intersection
+        function findRelevantTrafficLight(intersectionCoords, carDirection) {
+            let carDirIndex = -1;
+            // Determine car direction index (0: +Z, 1: +X, 2: -Z, 3: -X)
+            if (Math.abs(carDirection.z) > Math.abs(carDirection.x)) { // Moving primarily N/S
+                carDirIndex = carDirection.z > 0 ? 0 : 2;
+            } else { // Moving primarily E/W
+                carDirIndex = carDirection.x > 0 ? 1 : 3;
+            }
+            if (carDirIndex === -1) return null;
+
+            for (const light of trafficLights) {
+                if (light.intersection.equals(intersectionCoords)) {
+                    if (light.controlledDirections.includes(carDirIndex)) {
+                        return light;
+                    }
+                }
+            }
+            return null; // No matching light found
+        }
+
+
+        function updatePedestrians(deltaTime) {
+            pedestrians.forEach(ped => {
+                 if (!ped.mesh.visible) return;
+
+                const actualSpeed = ped.speed * settings.pedestrianSpeedMultiplier;
+                ped.progress += (actualSpeed / ped.path.length) * deltaTime;
+
+                if (ped.progress >= 1) {
+                    const newPath = getRandomSidewalkPath();
+                    if (newPath) {
+                        ped.path = newPath;
+                        ped.progress = 0; // Start at beginning
+                        ped.mesh.position.copy(ped.path.start);
+                        ped.mesh.position.y = 0.1; // Reset Y
+                        const lookTarget = new THREE.Vector3().addVectors(ped.mesh.position, new THREE.Vector3().subVectors(ped.path.end, ped.path.start).normalize());
+                        ped.mesh.lookAt(lookTarget.x, ped.mesh.position.y, lookTarget.z);
+                    } else {
+                        ped.progress = 1; // Stay at end if no new path
+                    }
+                } else if (ped.progress < 0) {
+                     ped.progress = 0;
+                     ped.mesh.position.copy(ped.path.start);
+                     ped.mesh.position.y = 0.1;
+                } else {
+                    ped.mesh.position.lerpVectors(ped.path.start, ped.path.end, ped.progress);
+                    ped.mesh.position.y = 0.1; // Keep Y constant
+                     // Keep looking forward
+                    const lookTarget = new THREE.Vector3().lerpVectors(ped.path.start, ped.path.end, ped.progress + 0.01);
+                    ped.mesh.lookAt(lookTarget.x, ped.mesh.position.y, lookTarget.z);
+                }
+            });
+        }
+
+        function updateTrafficLights(deltaTime) {
+            const yellowDuration = 2.5;
+            const allRedDuration = 1.0; // Brief pause where all controlled lights are red
+
+            trafficLights.forEach(tl => {
+                tl.timer += deltaTime;
+
+                const cycleTime = tl.cycleDuration;
+                // Simple two-phase timing (Green for one set, then Green for the other)
+                const greenDuration = (cycleTime - 2 * yellowDuration - 2 * allRedDuration) / 2;
+
+                const timeInCycle = tl.timer % cycleTime;
+                let newState = 'red'; // Default to red
+
+                // Phase 1 (e.g., N/S green)
+                if (timeInCycle < greenDuration) {
+                    newState = 'green';
+                } else if (timeInCycle < greenDuration + yellowDuration) {
+                    newState = 'yellow';
+                } else if (timeInCycle < greenDuration + yellowDuration + allRedDuration) {
+                    newState = 'red'; // All red pause
+                }
+                // Phase 2 (e.g., E/W green) - This light remains red during this phase
+                else if (timeInCycle < greenDuration * 2 + yellowDuration + allRedDuration) {
+                    newState = 'red'; // Other direction's green phase
+                } else if (timeInCycle < greenDuration * 2 + 2 * yellowDuration + allRedDuration) {
+                    newState = 'red'; // Other direction's yellow phase - this light still red
+                } else if (timeInCycle < greenDuration * 2 + 2 * yellowDuration + 2 * allRedDuration) {
+                     newState = 'red'; // Second all red pause
+                }
+                // Cycle repeats
+
+                // This logic assumes the light object represents ONE PHASE.
+                // If a light controls N/S, it's green during phase 1, red during phase 2.
+                // If a light controls E/W, it would be red during phase 1, green during phase 2.
+                // We need to know which phase this light belongs to.
+                // Let's assume lights controlling directions 0/2 are phase 1, 1/3 are phase 2.
+                const isPhase1Light = tl.controlledDirections.includes(0) || tl.controlledDirections.includes(2);
+
+                if (!isPhase1Light) {
+                    // This is a Phase 2 light (E/W), invert the logic
+                    if (timeInCycle < greenDuration + yellowDuration + allRedDuration) {
+                        newState = 'red'; // Red during Phase 1
+                    } else if (timeInCycle < greenDuration * 2 + yellowDuration + allRedDuration) {
+                        newState = 'green'; // Green during Phase 2
+                    } else if (timeInCycle < greenDuration * 2 + 2 * yellowDuration + allRedDuration) {
+                        newState = 'yellow'; // Yellow during Phase 2 end
+                    } else {
+                         newState = 'red'; // Red during pauses
+                    }
+                }
+
+
+                if (newState !== tl.state) {
+                    tl.state = newState;
+                    updateTrafficLightVisuals(tl);
+                }
+            });
+        }
+
+        function updateTrafficLightVisuals(tl) {
+            tl.lights.red.material = materials.trafficLightRedOff;
+            tl.lights.yellow.material = materials.trafficLightYellowOff;
+            tl.lights.green.material = materials.trafficLightGreenOff;
+            // Ensure emissive is off too
+            tl.lights.red.material.emissive.setHex(0x000000);
+            tl.lights.yellow.material.emissive.setHex(0x000000);
+            tl.lights.green.material.emissive.setHex(0x000000);
+
+
+            switch (tl.state) {
+                case 'red':
+                    tl.lights.red.material = materials.trafficLightRedOn;
+                    tl.lights.red.material.emissive.setHex(0xff0000); // Explicitly set emissive
+                    break;
+                case 'yellow':
+                    tl.lights.yellow.material = materials.trafficLightYellowOn;
+                     tl.lights.yellow.material.emissive.setHex(0xffff00);
+                    break;
+                case 'green':
+                    tl.lights.green.material = materials.trafficLightGreenOn;
+                     tl.lights.green.material.emissive.setHex(0x00ff00);
+                    break;
+            }
+             // Force material update (might not be strictly needed for MeshStandardMaterial emissive, but safe)
+             tl.lights.red.material.needsUpdate = true;
+             tl.lights.yellow.material.needsUpdate = true;
+             tl.lights.green.material.needsUpdate = true;
+        }
+
+
         function updateDayNightCycle(deltaTime) {
-            timeOfDay += deltaTime / dayDuration;
-            timeOfDay %= 1;
-            // ... (Sun position update - same) ...
-            const angle = timeOfDay * Math.PI * 2 - Math.PI / 2;
-            sunLight.position.x = 120 * Math.cos(angle);
-            sunLight.position.y = 100 * Math.sin(angle);
-            sunLight.position.z = 70 * Math.cos(angle * 0.5);
+            if (settings.dayNightCycle) {
+                settings.timeOfDay += deltaTime * settings.cycleSpeed / 10;
+                settings.timeOfDay %= 1.0;
+                if(gui) gui.controllersRecursive().forEach(c => { if(c.property === 'timeOfDay') c.updateDisplay() });
+            }
+
+            const time = settings.timeOfDay;
+            const sunAngle = time * Math.PI * 2;
+
+            // Sun position
+            const sunDistance = CITY_SIZE * 1.5; // Keep sun/moon further away
+            sunLight.position.set(
+                sunDistance * Math.cos(sunAngle),
+                sunDistance * Math.sin(sunAngle),
+                sunDistance * 0.4 * Math.sin(sunAngle - Math.PI / 4) // Add some E/W variation
+            );
             sunLight.target.position.set(0, 0, 0);
 
+            // Sun/Moon Mesh positions (slightly beyond light source)
+            const celestialBodyDist = CITY_SIZE * 1.8;
+            sunMesh.position.copy(sunLight.position).normalize().multiplyScalar(celestialBodyDist);
+            moonMesh.position.copy(sunLight.position).normalize().multiplyScalar(-celestialBodyDist); // Opposite side
 
-            // Light Intensity & Color (same logic)
-            // ... (intensityFactor, currentSunIntensity, currentAmbientIntensity) ...
-            const dayIntensity = 1.8; const nightIntensity = 0.05;
-            const ambientDay = 0.7; const ambientNight = 0.08;
-            const intensityFactor = Math.max(0, Math.sin(timeOfDay * Math.PI));
-            const currentSunIntensity = nightIntensity + (dayIntensity - nightIntensity) * intensityFactor;
-            const currentAmbientIntensity = ambientNight + (ambientDay - ambientNight) * intensityFactor;
-            sunLight.intensity = currentSunIntensity;
-            ambientLight.intensity = currentAmbientIntensity;
+            // Lighting and Sky Color interpolation
+            const nightColor = new THREE.Color(0x030510);
+            const dawnColor = new THREE.Color(0xffa040); // Orange dawn
+            const dayColor = new THREE.Color(0x87CEEB);
+            const duskColor = new THREE.Color(0xff6060); // Reddish dusk
 
-            // Background Color (same logic)
-            // ... (dayColor, duskColor, nightColor, bgColor lerp) ...
-             const dayColor = new THREE.Color(0x87CEEB); const duskColor = new THREE.Color(0xFF7F50); const nightColor = new THREE.Color(0x000022);
-             let bgColor = scene.background; // Modify existing color object
-             if (timeOfDay < 0.25) bgColor.lerpColors(nightColor, duskColor, timeOfDay / 0.25);
-             else if (timeOfDay < 0.5) bgColor.lerpColors(duskColor, dayColor, (timeOfDay - 0.25) / 0.25);
-             else if (timeOfDay < 0.75) bgColor.lerpColors(dayColor, duskColor, (timeOfDay - 0.5) / 0.25);
-             else bgColor.lerpColors(duskColor, nightColor, (timeOfDay - 0.75) / 0.25);
+            const nightAmbient = 0.05; const dayAmbient = 0.25;
+            const nightHemi = 0.1; const dayHemi = 0.5;
+            const nightSun = 0.0; const daySun = 1.5; // Slightly stronger sun
+            const dawnDuskSun = 0.8;
 
+            const dawnStart = 0.22, dawnEnd = 0.28;
+            const duskStart = 0.72, duskEnd = 0.78;
 
-            // Sun Color (same logic)
-            // ... (daySunColor, duskSunColor, nightSunColor, sunLight.color lerp) ...
-            const daySunColor = new THREE.Color(0xffffee); const duskSunColor = new THREE.Color(0xffaa88); const nightSunColor = new THREE.Color(0xccccff);
-            if (timeOfDay < 0.25) sunLight.color.lerpColors(nightSunColor, duskSunColor, timeOfDay / 0.25);
-            else if (timeOfDay < 0.5) sunLight.color.lerpColors(duskSunColor, daySunColor, (timeOfDay - 0.25) / 0.25);
-            else if (timeOfDay < 0.75) sunLight.color.lerpColors(daySunColor, duskSunColor, (timeOfDay - 0.5) / 0.25);
-            else sunLight.color.lerpColors(duskSunColor, nightSunColor, (timeOfDay - 0.75) / 0.25);
+            let skyColor = nightColor.clone();
+            let ambIntensity = nightAmbient;
+            let hemiIntensity = nightHemi;
+            let sunIntensity = nightSun;
+            let isNight = true;
 
+            if (time > dawnStart && time < duskEnd) { // Potential daylight hours
+                 isNight = sunLight.position.y < 0; // More accurate night check
 
-            // Streetlights / Headlights
-            const isNight = intensityFactor < 0.15;
-            const lightFadeFactor = deltaTime * 3.0; // Faster fade
+                if (time > dawnEnd && time < duskStart) { // Full Day
+                    skyColor = dayColor;
+                    ambIntensity = dayAmbient;
+                    hemiIntensity = dayHemi;
+                    sunIntensity = daySun;
+                } else if (time <= dawnEnd) { // Dawn transition
+                    const t = (time - dawnStart) / (dawnEnd - dawnStart);
+                    skyColor.lerpColors(nightColor, dawnColor, t * 1.5); // Faster transition to dawn color
+                    skyColor.lerp(dayColor, t); // Blend towards day blue
+                    ambIntensity = THREE.MathUtils.lerp(nightAmbient, dayAmbient, t);
+                    hemiIntensity = THREE.MathUtils.lerp(nightHemi, dayHemi, t);
+                    sunIntensity = THREE.MathUtils.lerp(nightSun, dawnDuskSun, t);
+                } else { // Dusk transition
+                    const t = (time - duskStart) / (duskEnd - duskStart);
+                    skyColor.lerpColors(dayColor, duskColor, t); // Day -> Dusk
+                    skyColor.lerp(nightColor, t * 1.5); // Blend faster towards night
+                    ambIntensity = THREE.MathUtils.lerp(dayAmbient, nightAmbient, t);
+                    hemiIntensity = THREE.MathUtils.lerp(dayHemi, nightHemi, t);
+                    sunIntensity = THREE.MathUtils.lerp(dawnDuskSun, nightSun, t);
+                }
+            }
 
-            streetLights.forEach(sl => {
-                const targetIntensity = isNight ? sl.intensity : 0;
-                sl.light.intensity += (targetIntensity - sl.light.intensity) * lightFadeFactor;
-                // Cannot easily update instanced bulb material emissiveness here
-                // If non-instanced, this would work:
-                // sl.meshMaterial.emissive.setHex(sl.light.intensity > 0.1 ? 0xffaa44 : 0x000000);
-                // sl.meshMaterial.emissiveIntensity = Math.min(1, sl.light.intensity / sl.intensity * 2);
-            });
+             // Clamp intensity based on sun height
+             const sunHeightFactor = Math.max(0, sunLight.position.y / sunDistance); // 0 to 1 based on height
+             sunIntensity *= sunHeightFactor;
+             ambIntensity = THREE.MathUtils.lerp(nightAmbient, ambIntensity, sunHeightFactor); // Blend ambient based on sun height too
+             hemiIntensity = THREE.MathUtils.lerp(nightHemi, hemiIntensity, sunHeightFactor);
 
-            cars.forEach(car => {
-                 const targetIntensity = isNight ? car.headlightIntensity : 0;
-                 car.headlights.forEach(light => {
-                     light.intensity += (targetIntensity - light.intensity) * lightFadeFactor;
-                 });
-                 // Update emissive material for the headlight meshes
-                 car.headlightMaterials.forEach(mat => {
-                    mat.emissive.setHex(targetIntensity > 1 ? 0xffffff : 0x000000);
-                    mat.emissiveIntensity = Math.min(1, targetIntensity / car.headlightIntensity * 2);
-                 });
+            // Apply lighting
+            sunLight.intensity = sunIntensity;
+            ambientLight.intensity = ambIntensity;
+            hemisphereLight.intensity = hemiIntensity;
+            // Update hemisphere colors based on sky/ground needs (could be more complex)
+            hemisphereLight.color.lerpColors(new THREE.Color(0x303080), new THREE.Color(0xffffbb), sunHeightFactor);
+            hemisphereLight.groundColor.lerpColors(new THREE.Color(0x101020), new THREE.Color(0x444488), sunHeightFactor);
+
+            scene.background = skyColor;
+            if (scene.fog) {
+                scene.fog.color = skyColor;
+            }
+
+            // Sun/Moon Visibility
+            sunMesh.visible = sunIntensity > 0.01 && !isNight;
+            moonMesh.visible = isNight || sunIntensity < 0.1; // Show moon when dark or sun is very low
+
+            // Lamppost lights
+            const lampIntensity = (isNight || sunIntensity < 0.1) && settings.showLamppostLights ? 1.8 : 0; // Turn on earlier/later
+            lampposts.forEach(lp => {
+                if (lp.light) lp.light.intensity = lampIntensity;
+                 if (lp.bulb) lp.bulb.material = lampIntensity > 0 ? materials.lampLightOn : materials.lampLightOff;
             });
         }
+
+        // --- GUI Setup ---
+        let gui;
+        function setupGUI() {
+            gui = new GUI();
+            gui.domElement.style.marginTop = '10px';
+
+            const perfFolder = gui.addFolder('Performance');
+            perfFolder.add(settings, 'shadows').name('Enable Shadows').onChange(updateShadowSettings);
+            perfFolder.add(settings, 'shadowMapSize', [512, 1024, 2048, 4096]).name('Shadow Map Size').onChange(updateShadowSettings);
+            perfFolder.add(settings, 'fogEnabled').name('Enable Fog').onChange(updateFog);
+            perfFolder.add(settings, 'fogDensity', 0.001, 0.03, 0.001).name('Fog Density').onChange(updateFog);
+            perfFolder.close();
+
+            const objFolder = gui.addFolder('Objects');
+            objFolder.add(settings, 'numBuildings', 10, 300, 10).name('Building Count').onFinishChange(settings.regenerateCity);
+            objFolder.add(settings, 'numCars', 0, 80, 1).name('Car Count').onFinishChange(settings.regenerateCity);
+            objFolder.add(settings, 'numPedestrians', 0, 150, 5).name('Pedestrian Count').onFinishChange(settings.regenerateCity);
+            objFolder.add(settings, 'addBillboards').name('Add Billboards').onFinishChange(settings.regenerateCity);
+            objFolder.add(settings, 'carSpeedMultiplier', 0.1, 3, 0.1).name('Car Speed');
+            objFolder.add(settings, 'pedestrianSpeedMultiplier', 0.1, 3, 0.1).name('Pedestrian Speed');
+            objFolder.add(settings, 'showCars').name('Show Cars').onChange(updateObjectVisibility);
+            objFolder.add(settings, 'showPedestrians').name('Show Pedestrians').onChange(updateObjectVisibility);
+            objFolder.close();
+
+            const aiFolder = gui.addFolder('Car AI');
+            aiFolder.add(settings, 'trafficLightCompliance').name('Obey Traffic Lights');
+            aiFolder.add(settings, 'carSafetyDistance', CAR_LENGTH, CAR_LENGTH * 5, 0.1).name('Safety Distance');
+            aiFolder.close();
+
+            const lightFolder = gui.addFolder('Lighting & Time');
+            lightFolder.add(settings, 'dayNightCycle').name('Auto Day/Night');
+            lightFolder.add(settings, 'timeOfDay', 0, 1, 0.01).name('Time of Day').listen().onChange(() => updateDayNightCycle(0)); // Manual change updates immediately
+            lightFolder.add(settings, 'cycleSpeed', 0, 0.1, 0.001).name('Cycle Speed');
+            lightFolder.add(settings, 'showLamppostLights').name('Lamppost Lights').onChange(() => updateDayNightCycle(0));
+            lightFolder.close();
+
+            gui.add(settings, 'regenerateCity').name('Regenerate City');
+            gui.add(settings, 'resetCamera').name('Reset Camera');
+        }
+
+        function updateShadowSettings() {
+            renderer.shadowMap.enabled = settings.shadows;
+            sunLight.castShadow = settings.shadows;
+            sunLight.shadow.mapSize.width = settings.shadowMapSize;
+            sunLight.shadow.mapSize.height = settings.shadowMapSize;
+            // Re-render needed after changing shadow map size/enabled
+            renderer.shadowMap.needsUpdate = true;
+             // Update materials (though often not strictly needed for just shadow map size)
+            scene.traverse(child => { if (child.material) child.material.needsUpdate = true; });
+        }
+
+         function updateFog() {
+            if (settings.fogEnabled) {
+                if (!scene.fog) {
+                    // Use background color at the time of enabling fog
+                    scene.fog = new THREE.FogExp2(scene.background, settings.fogDensity);
+                } else {
+                    scene.fog.density = settings.fogDensity;
+                    scene.fog.color.copy(scene.background); // Update color in case it changed
+                }
+            } else {
+                scene.fog = null;
+            }
+             // Force material update might be needed for fog changes in some cases
+             scene.traverse(child => { if (child.material) child.material.needsUpdate = true; });
+        }
+
+        function updateObjectVisibility() {
+             cars.forEach(c => c.mesh.visible = settings.showCars);
+             pedestrians.forEach(p => p.mesh.visible = settings.showPedestrians);
+             updateDayNightCycle(0); // Update lamppost lights based on visibility toggle
+        }
+
+        function resetCamera() {
+            camera.position.set(CITY_SIZE * 0.5, CITY_SIZE * 0.4, CITY_SIZE * 0.7); // Slightly different default view
+            camera.lookAt(0, 10, 0); // Look towards center, slightly elevated
+            if (controls) controls.update();
+        }
+
 
         // --- Window Resize ---
         function onWindowResize() {
@@ -1221,25 +1437,16 @@
         }
 
         // --- Animation Loop ---
-        function animate(time) { // time is passed by requestAnimationFrame
+        function animate() {
             requestAnimationFrame(animate);
+            const deltaTime = Math.min(clock.getDelta(), 0.05); // Cap delta time to prevent large jumps
 
-            const deltaTime = clock.getDelta();
-
-            // FPS Calculation
-            frameCount++;
-            if (time >= lastFPSTime + 1000) {
-                fpsElement.textContent = `FPS: ${frameCount}`;
-                frameCount = 0;
-                lastFPSTime = time;
-            }
+            updateDayNightCycle(deltaTime);
+            if (settings.showCars) updateCars(deltaTime);
+            if (settings.showPedestrians) updatePedestrians(deltaTime);
+            updateTrafficLights(deltaTime);
 
             controls.update();
-            updateCars(deltaTime);
-            updatePedestrians(deltaTime);
-            updateTrafficLights(deltaTime);
-            updateDayNightCycle(deltaTime);
-
             renderer.render(scene, camera);
         }
 
